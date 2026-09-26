@@ -1502,43 +1502,64 @@ if not icon:GetTexture() then icon:SetTexture("Interface\\Icons\\Spell_ChargeNeg
 icon:SetTexCoord(0.05, 0.95, 0.05, 0.95)
 icon:SetPoint("TOPLEFT", 7, -5)
 
+-- Universal circular positioning around the true center of the Minimap
+local function UpdateMinimapButtonPosition(angle)
+    local rad = math.rad(angle or 0)
+    -- Places the button center directly along the circular border
+    local radius = (Minimap:GetWidth() / 2) + 5
+    local x = math.cos(rad) * radius
+    local y = math.sin(rad) * radius
+    
+    UPMinimapButton:ClearAllPoints()
+    UPMinimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
 UPMinimapButton:SetScript("OnClick", function(self, button)
-    if button == "LeftButton" then OptionsFrame:SetShown(not OptionsFrame:IsShown()) end
+    if button == "LeftButton" then
+        OptionsFrame:SetShown(not OptionsFrame:IsShown())
+    end
 end)
+
 UPMinimapButton:RegisterForDrag("RightButton")
 UPMinimapButton:SetScript("OnDragStart", function(self)
     self:StartMoving()
     self:SetScript("OnUpdate", function()
-        local xpos, ypos = GetCursorPosition()
-        local xmin, ymin = Minimap:GetLeft(), Minimap:GetBottom()
-        local scale = Minimap:GetEffectiveScale()
-        xpos = xmin - xpos / scale + 70; ypos = ypos / scale - ymin - 70
-        UnitPlatesSettings.minimapIconPos = math.deg(math.atan2(ypos, xpos))
-        self:ClearAllPoints()
-        self:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 
-            52 - (80 * math.cos(math.rad(UnitPlatesSettings.minimapIconPos))), 
-            (80 * math.sin(math.rad(UnitPlatesSettings.minimapIconPos))) - 52)
+        local cursorX, cursorY = GetCursorPosition()
+        local scale = UIParent:GetEffectiveScale()
+        cursorX = cursorX / scale
+        cursorY = cursorY / scale
+
+        local miniX, miniY = Minimap:GetCenter()
+        if not miniX or not miniY then return end
+
+        -- Calculate true angle relative to the Minimap center
+        local angle = math.deg(math.atan2(cursorY - miniY, cursorX - miniX))
+        if angle < 0 then
+            angle = angle + 360
+        end
+
+        UnitPlatesSettings.minimapIconPos = angle
+        UpdateMinimapButtonPosition(angle)
     end)
 end)
+
 UPMinimapButton:SetScript("OnDragStop", function(self)
     self:StopMovingOrSizing()
     self:SetScript("OnUpdate", nil)
 end)
+
 UPMinimapButton:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:SetText("UnitPlates")
     GameTooltip:AddLine("Left-click to show options\nRight-click and drag to move", 1, 1, 1)
     GameTooltip:Show()
 end)
-UPMinimapButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-C_Timer.After(1, function()
-    local pos = UnitPlatesSettings.minimapIconPos or 0
-	UPMinimapButton:ClearAllPoints()
-    if pos ~= 0 then
-        UPMinimapButton:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 
-            52 - (80 * math.cos(math.rad(pos))), (80 * math.sin(math.rad(pos))) - 52)
-    else
-        UPMinimapButton:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", -2, 2)
-    end
+UPMinimapButton:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+end)
+
+C_Timer.After(0.5, function()
+    local pos = (UnitPlatesSettings and UnitPlatesSettings.minimapIconPos) or 200
+    UpdateMinimapButtonPosition(pos)
 end)
