@@ -1,8 +1,15 @@
 local _G = _G
 local addonName = "UnitPlates"
 
--- Handle modern secret values (Patch 12.0.5+)
-local issecretvalue = _G.issecretvalue or function() return false end
+-- Handle modern secret values across all 12.0+ engine variants
+local issecretvalue = (C_Secrets and C_Secrets.IsSecretValue)
+    or (C_Secret and C_Secret.IsSecret)
+    or _G.issecretvalue
+    or function(val)
+        if val == nil then return false end
+        local ok, isSec = pcall(function() return C_Secrets and C_Secrets.IsSecretValue(val) end)
+        return ok and isSec
+    end
 
 -------------------------------------------------
 -- SETTINGS & CONFIGURATION
@@ -83,16 +90,57 @@ local ActivePlates = {}
 -- UTILS
 -------------------------------------------------
 
+-- Safely tests any value or function return without triggering secret boolean crashes
+local function SafeBool(val)
+    if val == nil then return false end
+    if issecretvalue(val) then return false end
+    local ok, isTrue = pcall(function() return val == true end)
+    return ok and isTrue or false
+end
+
+local function SafeUnitCall(func, ...)
+    if not func then return false end
+    local ok, res = pcall(func, ...)
+    if not ok or res == nil then return false end
+    if issecretvalue(res) then return false end
+    local okTest, isTrue = pcall(function() return res == true end)
+    return okTest and isTrue or false
+end
+
+local function SafeUnitTruthy(func, ...)
+    if not func then return false end
+    local ok, res = pcall(func, ...)
+    if not ok or res == nil then return false end
+    if issecretvalue(res) then return false end
+    local okTest, isTrue = pcall(function() return (res ~= false and res ~= nil) end)
+    return okTest and isTrue or false
+end
+
 local function IsTrivial(unit)
-    local level = UnitLevel(unit)
+    if not unit then return false end
+    
+    local okLevel, level = pcall(UnitLevel, unit)
     local isGray = false
-    if level > 0 then
+    if okLevel and level and not issecretvalue(level) and level > 0 then
         local color = GetDifficultyColor(level)
-        if color.r > 0.4 and color.r < 0.6 and color.g > 0.4 and color.g < 0.6 then isGray = true end
+        if color and color.r > 0.4 and color.r < 0.6 and color.g > 0.4 and color.g < 0.6 then 
+            isGray = true 
+        end
     end
-    local cType = UnitCreatureType(unit)
-    local isCritter = (cType == "Critter" or cType == "CRITTER")
-    local isPet = UnitIsOtherPlayersPet(unit) or UnitIsBattlePet(unit)
+    
+    local isCritter = false
+    local okType, cType = pcall(UnitCreatureType, unit)
+    if okType and cType and not issecretvalue(cType) then
+        isCritter = (cType == "Critter" or cType == "CRITTER")
+    end
+    
+    local isPet = false
+    if UnitIsOtherPlayersPet and SafeUnitCall(UnitIsOtherPlayersPet, unit) then
+        isPet = true
+    elseif UnitIsBattlePet and SafeUnitCall(UnitIsBattlePet, unit) then
+        isPet = true
+    end
+    
     return isGray or isCritter or isPet
 end
 
@@ -108,7 +156,7 @@ local function ApplyMaskedBorders(targetFrame)
     targetFrame.bgOffsetFrame:SetBackdrop({
         bgFile = "Interface\\ChatFrame\\ChatFrameBackground", -- Guaranteed solid texture
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = false, tileSize = 0, edgeSize = 10, insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        tile = false, tileSize = 0, edgeSize = 8, insets = { left = 2, right = 2, top = 2, bottom = 2 }
     })
     targetFrame.bgOffsetFrame:SetBackdropColor(0, 0, 0, 1) -- SOLID BLACK
     targetFrame.bgOffsetFrame:SetBackdropBorderColor(0.1, 0.1, 0.1, 1)
@@ -120,7 +168,7 @@ local function ApplyMaskedBorders(targetFrame)
     targetFrame.overlayMask:SetFrameLevel(targetFrame:GetFrameLevel() + 2)
     targetFrame.overlayMask:SetBackdrop({
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = false, tileSize = 0, edgeSize = 10, insets = { left = 2, right = 2, top = 2, bottom = 2 }
+        tile = false, tileSize = 0, edgeSize = 8, insets = { left = 2, right = 2, top = 2, bottom = 2 }
     })
     targetFrame.overlayMask:SetBackdropBorderColor(0, 0, 0, 1)
     targetFrame.overlayMask:SetPoint("TOPLEFT", targetFrame, "TOPLEFT", -padding, padding)
@@ -586,52 +634,53 @@ local function ApplyDynamicWidth(f, unit)
 end
 
 local function UpdateHealth(f, unit)
-    -- Bypass the restriction for your current target
-    local queryUnit = UnitIsUnit(unit, "target") and "target" or unit
+    if not unit then return end
+
+    -- Safe target query: avoids `<secret boolean> and "target"` crash
+    local isTarget = SafeUnitCall(UnitIsUnit, unit, "target")
+    local queryUnit = isTarget and "target" or unit
+    
     local hp = UnitHealth(queryUnit)
     local maxHp = UnitHealthMax(queryUnit)
     
     f.healthBar:SetMinMaxValues(0, maxHp)
     f.healthBar:SetValue(hp)
 
-    -- === 1. NON-SECRET VALUES (Normal open world / non-restricted) ===
+    -- === 1. NON-SECRET VALUES ===
     if not issecretvalue(hp) and not issecretvalue(maxHp) then
         if maxHp <= 0 then maxHp = 1 end
         local pct = math.floor((hp / maxHp) * 100)
         
-        f.healthText:SetFormattedText("%s", AbbreviateNumbers(hp))
+        f.healthText:SetText(UPCoreAbbreviate(hp))
         
-        if pct < 100 or UnitAffectingCombat(queryUnit) then
+        local inCombat = SafeUnitCall(UnitAffectingCombat, queryUnit)
+        if pct < 100 or inCombat then
             f.healthPercent:SetText(pct .. "%")
         else
             f.healthPercent:SetText("")
         end
 
-    -- === 2. SECRET VALUES (Combat / Dungeons / Protected Enemies) ===
+    -- === 2. SECRET VALUES (Combat / Dungeons) ===
     else
-        -- Let C++ format the absolute health
-        f.healthText:SetFormattedText("%s", AbbreviateNumbers(hp))
+        if AbbreviateNumbers then
+            f.healthText:SetFormattedText("%s", AbbreviateNumbers(hp))
+        elseif AbbreviateLargeNumbers then
+            f.healthText:SetFormattedText("%s", AbbreviateLargeNumbers(hp))
+        else
+            f.healthText:SetFormattedText("%s", hp)
+        end
         
         local showedPercent = false
 
-        -- Official 12.0+ engine percentage route
         if UnitHealthPercent then
             local curve = CurveConstants and CurveConstants.ScaleTo100 or ScaleTo100Curve
             local success = pcall(function()
                 local pct = curve and UnitHealthPercent(queryUnit, true, curve) or UnitHealthPercent(queryUnit)
-				--print("pct "..pct)
-				if UnitAffectingCombat(queryUnit) then
-					f.healthPercent:SetFormattedText("%.0f%%", pct)
-				else
-					f.healthPercent:SetText("")
-				end
+                f.healthPercent:SetFormattedText("%.0f%%", pct)
             end)
-            if success then
-                showedPercent = true
-            end
+            if success then showedPercent = true end
         end
 
-        -- Fallback: Scrape Blizzard's native health text if UnitHealthPercent failed
         if not showedPercent and f:GetParent() and f:GetParent().UnitFrame then
             local uf = f:GetParent().UnitFrame
             local blizzBar = uf.healthBar or (uf.HealthBarsContainer and uf.HealthBarsContainer.healthBar)
@@ -653,15 +702,47 @@ local function UpdateHealth(f, unit)
     local nameColor = {1, 1, 1, 1}
 
     local isTapped = false
-    if UnitIsTapDenied then isTapped = UnitIsTapDenied(unit)
-    elseif UnitIsTapped then isTapped = UnitIsTapped(unit) and not UnitIsTappedByPlayer(unit) end
+    if UnitIsTapDenied then 
+        isTapped = SafeUnitCall(UnitIsTapDenied, unit)
+    elseif UnitIsTapped then 
+        isTapped = SafeUnitCall(UnitIsTapped, unit) and not SafeUnitCall(UnitIsTappedByPlayer, unit) 
+    end
+
+    local isPlayer = SafeUnitCall(UnitIsPlayer, unit)
+    local inParty = isPlayer and SafeUnitTruthy(UnitInParty, unit)
+    local inRaid = isPlayer and not inParty and SafeUnitTruthy(UnitInRaid, unit)
+
+    local inCombatUnit = SafeUnitCall(UnitAffectingCombat, unit)
+    local isFriend = SafeUnitCall(UnitIsFriend, "player", unit)
+    local isTargetingMe = false
+    if unit and not issecretvalue(unit) then
+        isTargetingMe = SafeUnitCall(UnitIsUnit, unit .. "target", "player")
+    end
+
+    -- Threat Check (Enemy targeting you)
+    local isThreatMob = false
+    local okThreat, resThreat = pcall(function()
+        return (not isPlayer) and inCombatUnit and (not isFriend) and isTargetingMe
+    end)
+    if okThreat and resThreat then
+        isThreatMob = true
+    end
 
     if isTapped then
         r, g, b = 0.235, 0.227, 0.235
-    elseif not UnitIsPlayer(unit) and UnitAffectingCombat(unit) and not UnitIsFriend("player", unit) and UnitIsUnit(unit.."target", "player") then
+    elseif isThreatMob then
+        -- Enemy targeting you: Threat Red
         r, g, b = 0.85, 0, 0
         nameColor = {0.9, 0, 0, 1}
         texture = "Interface\\AddOns\\UnitPlates\\img\\statusbar\\XPerl_StatusBar"
+    elseif inParty then
+        -- Party Member: Soft Blue (0.4, 0.6, 1.0)
+        r, g, b = 0.4, 0.6, 1.0
+        nameColor = {0.4, 0.6, 1.0, 1.0}
+    elseif inRaid then
+        -- Raid Member: Orange (0.85, 0.45, 0.15)
+        r, g, b = 0.85, 0.45, 0.15
+        nameColor = {0.85, 0.45, 0.15, 1.0}
     end
 
     f.healthBar:SetStatusBarColor(r, g, b)
@@ -670,7 +751,10 @@ local function UpdateHealth(f, unit)
 end
 
 local function UpdatePower(f, unit)
-    local queryUnit = UnitIsUnit(unit, "target") and "target" or unit
+    if not unit then return end
+    local isTarget = SafeUnitCall(UnitIsUnit, unit, "target")
+    local queryUnit = isTarget and "target" or unit
+    
     local maxPower = UnitPowerMax(queryUnit)
     local power = UnitPower(queryUnit)
     local pType = UnitPowerType(queryUnit)
@@ -689,9 +773,13 @@ local function UpdatePower(f, unit)
         f.powerBar:Show()
         
         if not issecretvalue(power) then
-            f.powerText:SetFormattedText("%s", AbbreviateNumbers(power))
+            f.powerText:SetText(UPCoreAbbreviate(power))
         else
-            f.powerText:SetFormattedText("%s", AbbreviateNumbers(power))
+            if AbbreviateNumbers then
+                f.powerText:SetFormattedText("%s", AbbreviateNumbers(power))
+            else
+                f.powerText:SetFormattedText("%s", power)
+            end
         end
     else
         f.powerBar:Hide()
@@ -700,7 +788,8 @@ local function UpdatePower(f, unit)
 end
 
 local function UpdateComboPoints(f, unit)
-    if UnitIsUnit(unit, "target") then
+    if not unit then return end
+    if SafeUnitCall(UnitIsUnit, unit, "target") then
         local points = UnitPower("player", 4)
         if not issecretvalue(points) and points > 0 then
             for i = 1, 5 do
@@ -718,14 +807,33 @@ local function UpdateComboPoints(f, unit)
 end
 
 local function UpdateUnitInfo(f, unit)
-    local name = UnitName(unit)
-    f.nameText:SetText(name)
-    
-    local guildName = nil
-    local myGuild = GetGuildInfo("player")
+    if not unit then return end
 
-    if UnitIsPlayer(unit) then
-        guildName = GetGuildInfo(unit)
+    -- Safe Unit Name handling
+    local okName, name = pcall(UnitName, unit)
+    if okName and name then
+        if issecretvalue(name) then
+            f.nameText:SetFormattedText("%s", name)
+        else
+            f.nameText:SetText(name)
+        end
+    else
+        f.nameText:SetText("")
+    end
+    
+    -- Safe Guild Name handling
+    local guildName = nil
+    local myGuild = nil
+    local okMyG, myG = pcall(GetGuildInfo, "player")
+    if okMyG and myG and not issecretvalue(myG) then myGuild = myG end
+
+    local isPlayer = SafeUnitCall(UnitIsPlayer, unit)
+
+    if isPlayer then
+        local okG, gName = pcall(GetGuildInfo, unit)
+        if okG and gName then
+            guildName = gName
+        end
     else
         -- Scrape NPC occupation/title or Pet owner from the tooltip
         if C_TooltipInfo then
@@ -733,9 +841,7 @@ local function UpdateUnitInfo(f, unit)
             if success and tooltipData and tooltipData.lines and tooltipData.lines[2] then
                 local line2 = tooltipData.lines[2].leftText
                 if line2 and not issecretvalue(line2) then
-                    -- Make sure line 2 isn't the Level line
                     if not string.match(line2, "^Level") and not string.match(line2, "^%?%?") then
-                        -- Remove any existing < > brackets in case the engine adds them
                         guildName = string.gsub(line2, "^<(.-)>$", "%1")
                     end
                 end
@@ -743,19 +849,33 @@ local function UpdateUnitInfo(f, unit)
         end
     end
 
-    -- Format, Color, and Stack the texts
-    if guildName and guildName ~= "" then
-        f.guildText:SetText("<" .. guildName .. ">")
-        
-        -- Color green if they are a player in your specific guild
-        if UnitIsPlayer(unit) and myGuild and guildName == myGuild then
+    -- Format & Stack Guild Text with Party/Raid/Guild Coloring
+    if guildName then
+        local isSecretGuild = issecretvalue(guildName)
+        local isMyGuild = not isSecretGuild and myGuild and not issecretvalue(myGuild) and (guildName == myGuild)
+        local inParty = isPlayer and SafeUnitTruthy(UnitInParty, unit)
+        local inRaid = isPlayer and not inParty and SafeUnitTruthy(UnitInRaid, unit)
+
+        if not isSecretGuild and guildName ~= "" then
+            f.guildText:SetText("<" .. guildName .. ">")
+        elseif isSecretGuild then
+            f.guildText:SetFormattedText("<%s>", guildName)
+        else
+            f.guildText:SetText("")
+        end
+
+        -- Priority: Same Guild (Green) > Party (Light Blue) > Raid (Orange) > Default White
+        if isMyGuild then
             f.guildText:SetTextColor(0, 0.999, 0, 1)
+        elseif inParty then
+            f.guildText:SetTextColor(0.4, 0.6, 1.0, 1.0)
+        elseif inRaid then
+            f.guildText:SetTextColor(0.85, 0.45, 0.15, 1.0)
         else
             f.guildText:SetTextColor(1, 1, 1, 1)
         end
+
         f.guildText:Show()
-        
-        -- Stack Name on top of Guild
         f.guildText:ClearAllPoints()
         f.guildText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
         f.nameText:ClearAllPoints()
@@ -766,28 +886,39 @@ local function UpdateUnitInfo(f, unit)
         f.nameText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
     end
     
-    local level = UnitLevel(unit)
-    if level <= 0 then
+    -- Safe Level handling
+    local okLevel, level = pcall(UnitLevel, unit)
+    level = (okLevel and level) or 0
+    if issecretvalue(level) then
+        f.levelText:SetFormattedText("%s", level)
+        f.levelText:SetTextColor(1, 1, 1)
+    elseif level <= 0 then
         f.levelText:SetText("??")
         f.levelText:SetTextColor(1, 0, 0)
     else
         f.levelText:SetText(level)
-        local color = GetQuestDifficultyColor(level)
-        f.levelText:SetTextColor(color.r, color.g, color.b)
+        local color = GetDifficultyColor(level)
+        if color then
+            f.levelText:SetTextColor(color.r, color.g, color.b)
+        end
     end
 
-    local isPlayer = UnitIsPlayer(unit)
-
+    -- Safe Race, Class, & PVP Badge handling
     if isPlayer then
-        local _, race = UnitRace(unit)
-        local gender = UnitSex(unit)
-        if race then
-            race = string.gsub(string.lower(race), " ", "")
-            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\races\\"..race.."_"..(gender == 3 and "female" or "male")..".tga")
+        local okRace, race = pcall(UnitRace, unit)
+        local okSex, gender = pcall(UnitSex, unit)
+        if okRace and not issecretvalue(race) and race then
+            local cleanRace = string.gsub(string.lower(race), " ", "")
+            local gStr = (okSex and not issecretvalue(gender) and gender == 3) and "female" or "male"
+			-- print("cleanRace "..cleanRace)
+			-- print("gStr "..gStr)
+            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\races\\" .. cleanRace .. "_" .. gStr .. ".tga")
+        else
+            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\loading.tga")
         end
         
-        local _, class = UnitClass(unit)
-        if class and classCoords[class] then
+        local okClass, class = pcall(UnitClass, unit)
+        if okClass and not issecretvalue(class) and class and classCoords[class] then
             f.classIcon:SetTexCoord(unpack(classCoords[class]))
             f.classIcon:Show()
         else
@@ -795,17 +926,20 @@ local function UpdateUnitInfo(f, unit)
         end
         
         local rank = 0
-        if UnitPVPRank then rank = UnitPVPRank(unit) end
-        if rank and rank > 0 then
+        if UnitPVPRank then 
+            local okRank, rVal = pcall(UnitPVPRank, unit)
+            if okRank and not issecretvalue(rVal) and rVal then rank = rVal end
+        end
+        if rank > 0 then
             f.pvpRankIcon:SetTexture(string.format("Interface\\PVPRankBadges\\PVPRank%02d", rank))
             f.pvpRankIcon:Show()
         else
             f.pvpRankIcon:Hide()
         end
     else
-        local cType = UnitCreatureType(unit)
-        if cType then
-            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\"..string.upper(cType)..".tga")
+        local okType, cType = pcall(UnitCreatureType, unit)
+        if okType and not issecretvalue(cType) and cType then
+            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\" .. string.upper(cType) .. ".tga")
         else
             f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\UNKNOWN.tga")
         end
@@ -813,50 +947,75 @@ local function UpdateUnitInfo(f, unit)
         f.pvpRankIcon:Hide()
     end
 
-    -- === PVP ICON LOGIC (Applies to both Players and NPCs) ===
-    local isFFA = UnitIsPVPFreeForAll and UnitIsPVPFreeForAll(unit)
-    local fac = UnitFactionGroup(unit)
+    -- Safe PVP Icon logic (No secret boolean comparisons!)
+    local isFFA = UnitIsPVPFreeForAll and SafeUnitCall(UnitIsPVPFreeForAll, unit)
+    local isPvP = UnitIsPVP and SafeUnitCall(UnitIsPVP, unit)
+    
+    local fac = nil
+    if UnitFactionGroup then
+        local ok, res = pcall(UnitFactionGroup, unit)
+        if ok and not issecretvalue(res) and res then fac = res end
+    end
     
     if isFFA then
         f.pvpIcon:SetTexture("Interface\\TargetingFrame\\UI-PVP-FFA")
         f.pvpIcon:Show()
-    elseif UnitIsPVP(unit) and fac and (fac == "Horde" or fac == "Alliance") then
-        f.pvpIcon:SetTexture("Interface\\TargetingFrame\\UI-PVP-"..fac)
+    elseif isPvP and fac and (fac == "Horde" or fac == "Alliance") then
+        f.pvpIcon:SetTexture("Interface\\TargetingFrame\\UI-PVP-" .. fac)
         f.pvpIcon:Show()
     else
         f.pvpIcon:Hide()
     end
 
-    local classif = UnitClassification(unit)
-    if classif == "elite" then
-        f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIcon:SetVertexColor(1, 1, 0, 1); f.rarityIcon:Show()
-        f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIconR:SetVertexColor(1, 1, 0, 1); f.rarityIconR:Show()
-    elseif classif == "rareelite" then
-        f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIcon:SetVertexColor(1, 1, 1, 1); f.rarityIcon:Show()
-        f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIconR:SetVertexColor(1, 1, 1, 1); f.rarityIconR:Show()
-    elseif classif == "rare" then
-        f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_rare"); f.rarityIcon:SetVertexColor(1, 1, 1, 1); f.rarityIcon:Show()
-        f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_rare"); f.rarityIconR:SetVertexColor(1, 1, 1, 1); f.rarityIconR:Show()
-    elseif classif == "boss" then
-        f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIcon:SetVertexColor(0.5, 0, 0, 1); f.rarityIcon:Show()
-        f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIconR:SetVertexColor(0.5, 0, 0, 1); f.rarityIconR:Show()
+    -- Safe Elite / Rare classification
+    local okClassif, classif = pcall(UnitClassification, unit)
+    if okClassif and not issecretvalue(classif) and classif then
+        if classif == "elite" then
+            f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIcon:SetVertexColor(1, 1, 0, 1); f.rarityIcon:Show()
+            f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIconR:SetVertexColor(1, 1, 0, 1); f.rarityIconR:Show()
+        elseif classif == "rareelite" then
+            f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIcon:SetVertexColor(1, 1, 1, 1); f.rarityIcon:Show()
+            f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIconR:SetVertexColor(1, 1, 1, 1); f.rarityIconR:Show()
+        elseif classif == "rare" then
+            f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_rare"); f.rarityIcon:SetVertexColor(1, 1, 1, 1); f.rarityIcon:Show()
+            f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_rare"); f.rarityIconR:SetVertexColor(1, 1, 1, 1); f.rarityIconR:Show()
+        elseif classif == "boss" then
+            f.rarityIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIcon:SetVertexColor(0.5, 0, 0, 1); f.rarityIcon:Show()
+            f.rarityIconR:SetTexture("Interface\\AddOns\\UnitPlates\\img\\frame_elite"); f.rarityIconR:SetVertexColor(0.5, 0, 0, 1); f.rarityIconR:Show()
+        else
+            f.rarityIcon:Hide()
+            f.rarityIconR:Hide()
+        end
     else
         f.rarityIcon:Hide()
         f.rarityIconR:Hide()
     end
 
-    if UnitAffectingCombat(unit) then f.combatIcon:Show() else f.combatIcon:Hide() end
+    local inCombat = UnitAffectingCombat and SafeUnitCall(UnitAffectingCombat, unit)
+    if inCombat then f.combatIcon:Show() else f.combatIcon:Hide() end
 
-    if GetPetHappiness and UnitIsUnit(unit, "pet") then
-        local hap = GetPetHappiness()
-        if hap == 1 then f.petHappiness:SetTexCoord(0.375, 0.5625, 0, 0.359375); f.petHappiness:Show()
-        elseif hap == 2 then f.petHappiness:SetTexCoord(0.1875, 0.375, 0, 0.359375); f.petHappiness:Show()
-        else f.petHappiness:Hide() end
+    -- Safe Pet Happiness
+    local isPetUnit = false
+    if UnitIsUnit then
+        isPetUnit = SafeUnitCall(UnitIsUnit, unit, "pet")
+    end
+    if GetPetHappiness and isPetUnit then
+        local okHap, hap = pcall(GetPetHappiness)
+        if okHap and not issecretvalue(hap) and hap then
+            if hap == 1 then f.petHappiness:SetTexCoord(0.375, 0.5625, 0, 0.359375); f.petHappiness:Show()
+            elseif hap == 2 then f.petHappiness:SetTexCoord(0.1875, 0.375, 0, 0.359375); f.petHappiness:Show()
+            else f.petHappiness:Hide() end
+        else
+            f.petHappiness:Hide()
+        end
     else
         f.petHappiness:Hide()
     end
 
-    if UnitCanAttack("player", unit) then
+    -- Safe Range Checker
+    local canAttack = UnitCanAttack and SafeUnitCall(UnitCanAttack, "player", unit)
+
+    if canAttack then
         local success, inRangeAuto = pcall(IsSpellInRange, "Auto Shot", unit)
         local success2, inRangeShoot = pcall(IsSpellInRange, "Shoot", unit)
         if (success and inRangeAuto == 1) or (success2 and inRangeShoot == 1) then
@@ -874,9 +1033,9 @@ local function UpdateUnitInfo(f, unit)
         f.auras:SetPoint("BOTTOM", f.nameText, "TOP", 0, 4)
     end
 	
-	-- QUEST ICON LOGIC (Modern API Tooltip Scraping)
+	-- Safe Quest Icon Scraping (Protected against secret strings)
     f.questIcon:Hide()
-    if C_TooltipInfo then
+    if not isPlayer and C_TooltipInfo then
         local success, tooltipData = pcall(C_TooltipInfo.GetUnit, unit)
         
         if success and tooltipData and tooltipData.lines then
@@ -885,7 +1044,6 @@ local function UpdateUnitInfo(f, unit)
                 if txt and not issecretvalue(txt) then
                     local isQuestLine = false
                     
-                    -- Extract progress numbers (e.g., "6" and "6" from "6/6")
                     local currentStr, totalStr = string.match(txt, "(%d+)%s*/%s*(%d+)")
                     local hasProgress = (currentStr ~= nil)
                     local isComplete = false
@@ -893,56 +1051,39 @@ local function UpdateUnitInfo(f, unit)
                     if hasProgress then
                         local c = tonumber(currentStr)
                         local t = tonumber(totalStr)
-                        -- If we have enough, mark this specific objective as complete
-                        if c and t and c >= t then
-                            isComplete = true
-                        end
+                        if c and t and c >= t then isComplete = true end
                     end
                     
-                    -- ONLY show the icon if the objective is NOT complete yet
                     if not isComplete then
-                        -- Check if the API natively tags it as a quest objective
                         if Enum and Enum.TooltipDataLineType and line.type == Enum.TooltipDataLineType.QuestObjective then
                             isQuestLine = true
-                        elseif line.type == 8 then -- 8 is the raw integer ID for QuestObjective
-                            isQuestLine = true
-                        elseif hasProgress then
+                        elseif line.type == 8 or hasProgress then
                             isQuestLine = true
                         end
                         
                         if isQuestLine then
                             local lowerTxt = string.lower(txt)
-                            local lowerName = string.lower(UnitName(unit) or "")
+                            local rawName = okName and name
+                            local lowerName = (rawName and not issecretvalue(rawName)) and string.lower(rawName) or ""
                             
-                            -- 1. Check for Turn-in / Interact
                             local isInteract = string.find(lowerTxt, "speak") or string.find(lowerTxt, "return") or string.find(lowerTxt, "interact") or string.find(lowerTxt, "talk")
-                            
-                            -- 2. Strictly check for Slay/Kill verbs
                             local isKill = string.find(lowerTxt, "slain") or string.find(lowerTxt, "kill") or string.find(lowerTxt, "destroy") or string.find(lowerTxt, "defeat") or string.find(lowerTxt, "eliminate")
                             
-                            -- If no verbs, check if it's exactly "MobName: 0/10"
                             if not isKill and lowerName ~= "" then
-                                -- Strip out the numbers, slashes, and colons
                                 local strippedTxt = string.gsub(lowerTxt, "[%d/:]", "")
-                                -- Trim surrounding whitespace
                                 strippedTxt = string.match(strippedTxt, "^%s*(.-)%s*$") or strippedTxt
-                                
-                                -- If the remaining text exactly matches the mob's name (or plural), it's a kill!
                                 if strippedTxt == lowerName or strippedTxt == lowerName .. "s" then
                                     isKill = true
                                 end
                             end
                             
-                            -- Assign the correct icon
                             if isInteract then
                                 f.questIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\quest\\exclamation_yellow")
                             elseif isKill then
                                 f.questIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\quest\\slay")
                             elseif hasProgress then
-                                -- It has 0/10 progress, but isn't a kill, so it must be an item drop
                                 f.questIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\quest\\loot")
                             else
-                                -- We don't know what it is, use your general exclamation fallback
                                 f.questIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\quest\\exclamation_yellow")
                             end
                             
@@ -1155,7 +1296,8 @@ local function UpdateCastBar(f, unit)
 end
 
 local function UpdateTarget(f, unit)
-    if UnitIsUnit(unit, "target") then
+    if not unit then return end
+    if SafeUnitCall(UnitIsUnit, unit, "target") then
         f.targetLeft:Show()
         f.targetRight:Show()
         f.selectionGlow:Show()
