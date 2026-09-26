@@ -772,7 +772,7 @@ local function UpdateUnitInfo(f, unit)
         f.levelText:SetTextColor(1, 0, 0)
     else
         f.levelText:SetText(level)
-        local color = GetDifficultyColor(level)
+        local color = GetQuestDifficultyColor(level)
         f.levelText:SetTextColor(color.r, color.g, color.b)
     end
 
