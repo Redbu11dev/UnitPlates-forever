@@ -1,0 +1,12 @@
+## Interface: 17000
+## Author: Redbu11
+## Title: UnitPlates
+## Version: 1
+## LoadOnDemand: 0
+## DefaultState: enabled
+## Notes: Best nameplates.
+## SavedVariables: UPDebugMissingSpells
+## SavedVariablesPerCharacter: UnitPlatesSettings
+## X-Website: https://github.com/Redbu11dev
+
+UnitPlates.lua
