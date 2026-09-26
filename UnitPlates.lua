@@ -449,7 +449,21 @@ local function BuildNameplateUI(plate)
     f.powerBar:SetSize(width, UPConstants.baseHeight / 2)
     f.powerBar:SetPoint("TOP", f.healthBar, "BOTTOM", 0, 0)
     f.powerBar:SetStatusBarTexture("Interface\\AddOns\\UnitPlates\\img\\statusbar\\XPerl_StatusBar7")
-    ApplyMaskedBorders(f.powerBar)
+    --ApplyMaskedBorders(f.powerBar)
+	local padding = 2.5
+    
+    -- Solid Black Background
+    f.powerBar.bgOffsetFrame = CreateFrame("Frame", nil, f.powerBar, "BackdropTemplate")
+    f.powerBar.bgOffsetFrame:SetFrameLevel(f.powerBar:GetFrameLevel() - 1)
+    f.powerBar.bgOffsetFrame:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground", -- Guaranteed solid texture
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false, tileSize = 0, edgeSize = 8, insets = { left = 2, right = 2, top = 2, bottom = 2 }
+    })
+    f.powerBar.bgOffsetFrame:SetBackdropColor(0, 0, 0, 1) -- SOLID BLACK
+    f.powerBar.bgOffsetFrame:SetBackdropBorderColor(0.1, 0.1, 0.1, 1)
+    f.powerBar.bgOffsetFrame:SetPoint("TOPLEFT", f.powerBar, "TOPLEFT", -padding, padding)
+    f.powerBar.bgOffsetFrame:SetPoint("BOTTOMRIGHT", f.powerBar, "BOTTOMRIGHT", padding, -padding)
 
     -- TYPE ICON
     f.typeIcon = CreateFrame("Frame", nil, f)
@@ -467,7 +481,7 @@ local function BuildNameplateUI(plate)
     f.textLayerHost:SetAllPoints()
 
     f.healthText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.healthText:SetFont(GetFont(), UPConstants.baseHeight * 0.625, "OUTLINE")
+    f.healthText:SetFont(GetFont(), UPConstants.baseHeight * 0.525, "OUTLINE")
     f.healthText:SetPoint("BOTTOMRIGHT", f.healthBar, "BOTTOMRIGHT", -1, -(UPConstants.baseHeight * 0.3))
     
     f.healthPercent = f.textLayerHost:CreateFontString(nil, "OVERLAY")
@@ -484,11 +498,11 @@ local function BuildNameplateUI(plate)
     f.guildText:Hide()
 
     f.levelText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.levelText:SetFont(GetFont(), UPConstants.baseHeight * 0.625, "OUTLINE")
+    f.levelText:SetFont(GetFont(), UPConstants.baseHeight * 0.525, "OUTLINE")
     f.levelText:SetPoint("BOTTOMLEFT", f.healthBar, "BOTTOMLEFT", 2, -(UPConstants.baseHeight * 0.3))
 
     f.powerText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.powerText:SetFont(GetFont(), UPConstants.baseHeight * 0.5, "OUTLINE")
+    f.powerText:SetFont(GetFont(), UPConstants.baseHeight * 0.45, "OUTLINE")
     f.powerText:SetPoint("BOTTOMRIGHT", f.powerBar, "BOTTOMRIGHT", -1, -(UPConstants.baseHeight * 0.3))
 
     -- CAST BAR
@@ -938,7 +952,8 @@ local function UpdateUnitInfo(f, unit)
         end
     else
         local okType, cType = pcall(UnitCreatureType, unit)
-        if okType and not issecretvalue(cType) and cType then
+		--print("cType "..cType)
+        if okType and not issecretvalue(cType) and cType and cType ~= "Not specified" then
             f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\" .. string.upper(cType) .. ".tga")
         else
             f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\UNKNOWN.tga")
