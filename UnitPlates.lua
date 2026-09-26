@@ -122,7 +122,7 @@ local function IsTrivial(unit)
     local okLevel, level = pcall(UnitLevel, unit)
     local isGray = false
     if okLevel and level and not issecretvalue(level) and level > 0 then
-        local color = GetDifficultyColor(level)
+        local color = GetQuestDifficultyColor(level)
         if color and color.r > 0.4 and color.r < 0.6 and color.g > 0.4 and color.g < 0.6 then 
             isGray = true 
         end
@@ -897,7 +897,7 @@ local function UpdateUnitInfo(f, unit)
         f.levelText:SetTextColor(1, 0, 0)
     else
         f.levelText:SetText(level)
-        local color = GetDifficultyColor(level)
+        local color = GetQuestDifficultyColor(level)
         if color then
             f.levelText:SetTextColor(color.r, color.g, color.b)
         end
