@@ -427,12 +427,12 @@ local function BuildNameplateUI(plate)
     f.healthPercent:SetPoint("CENTER", f.healthBar, "CENTER", 0, 0)
 
     f.nameText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.nameText:SetFont(GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.nameText:SetFont(GameFontNormal:GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
     f.nameText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
 	
 	-- GUILD / NPC OCCUPATION TEXT
     f.guildText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.guildText:SetFont(GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.guildText:SetFont(GameFontNormal:GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
     f.guildText:Hide()
 
     f.levelText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
@@ -457,7 +457,7 @@ local function BuildNameplateUI(plate)
     f.castIcon:SetPoint("RIGHT", f.castBar, "LEFT", -2, 0)
     
     f.castName = f.castBar:CreateFontString(nil, "OVERLAY")
-    f.castName:SetFont(GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.castName:SetFont(GameFontNormal:GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
     f.castName:SetPoint("TOP", f.castBar, "BOTTOM", 0, -2)
 	
 	f.castTime = f.castBar:CreateFontString(nil, "OVERLAY")
