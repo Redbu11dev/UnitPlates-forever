@@ -16,31 +16,44 @@ local issecretvalue = (C_Secrets and C_Secrets.IsSecretValue)
 -------------------------------------------------
 UnitPlatesSettings = UnitPlatesSettings or {}
 
-local function LoadDefaultSettings()
-    UnitPlatesSettings = {
-        minimapIconPos = 0,
-        showBuffs = true,
-        onlyYourBuffs = false,
-        ignoredBuffNames = "",
-        showDebuffs = true,
-        onlyYourDebuffs = false,
-        ignoredDebuffNames = "",
-        enableWoWTranslateSupport = true,
-        enableChatBubbleHandling = true,
-        overlapping = true,
-        scale = 1.4,
-        aurasInRow = 6,
-        aurasInRowTrivial = 4,
-        nameplateWidthPercent = 65,
-        nameplateWidthPercentTrivial = 45,
-        selectionGlowScale = 100,
-        selectionGlowAlpha = 50       
-    }
+local defaultSettings = {
+    minimapIconPos = 0,
+    showBuffs = true,
+    onlyYourBuffs = false,
+    ignoredBuffNames = "",
+    showDebuffs = true,
+    onlyYourDebuffs = false,
+    ignoredDebuffNames = "",
+    enableWoWTranslateSupport = true,
+    enableChatBubbleHandling = true,
+    overlapping = true,
+    scale = 1.4,
+    aurasInRow = 6,
+    aurasInRowTrivial = 4,
+    nameplateWidthPercent = 65,
+    nameplateWidthPercentTrivial = 45,
+    selectionGlowScale = 100,
+    selectionGlowAlpha = 50       
+}
+
+-- Only fills in missing defaults without wiping your saved choices
+local function InitSettings()
+    UnitPlatesSettings = UnitPlatesSettings or {}
+    for k, v in pairs(defaultSettings) do
+        if UnitPlatesSettings[k] == nil then
+            UnitPlatesSettings[k] = v
+        end
+    end
 end
 
-if next(UnitPlatesSettings) == nil then LoadDefaultSettings() end
-if not UnitPlatesSettings.scale then UnitPlatesSettings.scale = 1.4 end
-if not UnitPlatesSettings.nameplateWidthPercentTrivial then UnitPlatesSettings.nameplateWidthPercentTrivial = 45 end
+local function LoadDefaultSettings()
+    UnitPlatesSettings = {}
+    for k, v in pairs(defaultSettings) do
+        UnitPlatesSettings[k] = v
+    end
+end
+
+InitSettings()
 
 local function IsNameIgnored(name, ignoredString)
     if not ignoredString or ignoredString == "" then return false end
@@ -1623,7 +1636,7 @@ MainFrame:RegisterEvent("RAID_TARGET_UPDATE")
 
 MainFrame:SetScript("OnEvent", function(self, event, unit, ...)
     if event == "ADDON_LOADED" and unit == addonName then
-        LoadDefaultSettings()
+        InitSettings()
     elseif event == "PLAYER_ENTERING_WORLD" then
         SetCVar("nameplateShowEnemies", 1)
     elseif event == "NAME_PLATE_UNIT_ADDED" then
