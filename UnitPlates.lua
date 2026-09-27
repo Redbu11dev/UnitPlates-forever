@@ -144,6 +144,194 @@ local function IsTrivial(unit)
     return isGray or isCritter or isPet
 end
 
+-- Ranged Weapon & Throw abilities
+local rangedSpells = {
+    "Throw",
+    "Shoot",
+    "Auto Shot",
+    "Shoot Bow",
+    "Shoot Gun",
+    "Shoot Crossbow",
+}
+
+local function IsTargetInShootingRange(unit)
+    local queryUnit = SafeUnitCall(UnitIsUnit, unit, "target") and "target" or unit
+    for _, spell in ipairs(rangedSpells) do
+        local ok, inRange
+        if C_Spell and C_Spell.IsSpellInRange then
+            ok, inRange = pcall(C_Spell.IsSpellInRange, spell, queryUnit)
+        else
+            ok, inRange = pcall(IsSpellInRange, spell, queryUnit)
+        end
+        
+        if ok and inRange and not issecretvalue(inRange) then
+            -- Handles both classic integer (1) and modern boolean (true)
+            if inRange == 1 or inRange == true then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function UpdateShootingRange(f, unit)
+    if not f or not f.shootingIcon or not unit then return end
+    
+    local isTarget = SafeUnitCall(UnitIsUnit, unit, "target")
+    local canAttack = isTarget and SafeUnitCall(UnitCanAttack, "player", "target")
+    
+    if canAttack and IsTargetInShootingRange(unit) then
+        f.shootingIcon:Show()
+    else
+        f.shootingIcon:Hide()
+    end
+end
+
+-- Helper to create wrapped icon frames with dedicated FrameLevel control
+local function CreateIconWrapper(parent, size, drawLayer, frameLevel)
+    local frame = CreateFrame("Frame", nil, parent)
+    frame:SetSize(size, size)
+    if frameLevel then frame:SetFrameLevel(frameLevel) end
+    
+    local tex = frame:CreateTexture(nil, drawLayer or "ARTWORK")
+    tex:SetAllPoints()
+    frame.icon = tex
+    
+    -- Forward texture methods so both frame:SetTexture() and frame.icon:SetTexture() work seamlessly
+    function frame:SetTexture(...) return self.icon:SetTexture(...) end
+    function frame:SetTexCoord(...) return self.icon:SetTexCoord(...) end
+    function frame:SetVertexColor(...) return self.icon:SetVertexColor(...) end
+    function frame:GetTexture(...) return self.icon:GetTexture(...) end
+    function frame:SetDesaturated(...) return self.icon:SetDesaturated(...) end
+    
+    frame:Hide()
+    return frame
+end
+
+-- Original 1.12 dynamic Name, Guild, Auras, and Raid Icon positioning
+local function UpdateNameAndGuildPosition(f)
+    if not f or not f.nameText or not f.healthBar then return end
+
+    local hasGuild = f.guildText and f.guildText:IsShown() and f.guildText:GetText() and f.guildText:GetText() ~= ""
+    local hasCP = f.combopoints and f.combopoints:IsShown()
+    local cpOrb = hasCP and f.combopoints.orbs and f.combopoints.orbs[3]
+
+    f.nameText:ClearAllPoints()
+    if f.guildText then f.guildText:ClearAllPoints() end
+
+    if not hasGuild then
+        if hasCP and cpOrb then
+            -- Anchored above the center combo point orb
+            f.nameText:SetPoint("BOTTOM", cpOrb, "TOP", 0, 4)
+        else
+            -- Anchored above the health bar
+            f.nameText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
+        end
+    else
+        if hasCP and cpOrb then
+            -- Guild anchored above center combo point orb, Name above Guild
+            f.guildText:SetPoint("BOTTOM", cpOrb, "TOP", 0, 4)
+        else
+            -- Guild anchored above health bar, Name above Guild
+            f.guildText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
+        end
+        f.nameText:SetPoint("BOTTOM", f.guildText, "TOP", 0, 2)
+    end
+
+    -- Keep Auras container anchored above Name
+    if f.auras then
+        f.auras:ClearAllPoints()
+        if f.classIcon and f.classIcon:IsShown() then
+            f.auras:SetPoint("BOTTOM", f.nameText, "TOP", 0, (UPConstants.baseHeight * 1.25) / 2 + 4)
+        else
+            f.auras:SetPoint("BOTTOM", f.nameText, "TOP", 0, 4)
+        end
+    end
+
+    -- Keep Raid Icon anchored above Auras (or Name if no auras)
+    if f.raidIcon and f.raidIcon:IsShown() then
+        f.raidIcon:ClearAllPoints()
+        if f.auras and f.auras:IsShown() then
+            f.raidIcon:SetPoint("BOTTOM", f.auras, "TOP", 0, 4)
+        else
+            f.raidIcon:SetPoint("BOTTOM", f.nameText, "TOP", 0, 4)
+        end
+    end
+end
+
+-- Exact 1.12 position matrix for PvP Rank, PvP, Pet Happiness, and Combat icons
+local function UpdateStatusIconPositions(f)
+    if not f or not f.nameText then return end
+
+    local pvpRankSize = UPConstants.baseHeight * 0.75
+    local pvpIconSize = UPConstants.baseHeight * 1.8
+    local pixel = UPConstants.baseHeight / 16
+
+    local pvpRankShown = f.pvpRankIcon and f.pvpRankIcon:IsShown()
+    local pvpShown = f.pvpIcon and f.pvpIcon:IsShown()
+    local petShown = f.petHappiness and f.petHappiness:IsShown()
+    local combatShown = f.combatIcon and f.combatIcon:IsShown()
+
+    -- 1. Position PvP Rank Badge
+    if f.pvpRankIcon then
+        f.pvpRankIcon:ClearAllPoints()
+        f.pvpRankIcon:SetPoint("LEFT", f.nameText, "RIGHT", pixel, 0)
+    end
+
+    -- 2. Position PvP Faction Icon (with the original vertical drop)
+    if f.pvpIcon then
+        f.pvpIcon:ClearAllPoints()
+        if pvpRankShown then
+            f.pvpIcon:SetPoint("LEFT", f.pvpRankIcon, "RIGHT", 0, -pvpIconSize / 4.5)
+        else
+            f.pvpIcon:SetPoint("LEFT", f.nameText, "RIGHT", 0, -pvpIconSize / 4.5)
+        end
+    end
+
+    -- 3. Offset calculation for Pet Happiness & Combat Icons
+    local pvpOffset = (2 * pixel) + (pvpIconSize / 1.8)
+    if pvpRankShown then
+        pvpOffset = pvpOffset + pvpRankSize
+    end
+
+    -- 4. Position Pet Happiness and Combat (Original 1.12 branch matrix)
+    if pvpShown then
+        if petShown then
+            -- [Name] [PvP] [PetHappiness] [Combat]
+            f.petHappiness:ClearAllPoints()
+            f.petHappiness:SetPoint("LEFT", f.nameText, "RIGHT", pvpOffset, 0)
+            
+            if combatShown then
+                f.combatIcon:ClearAllPoints()
+                f.combatIcon:SetPoint("LEFT", f.petHappiness, "RIGHT", 0, 0)
+            end
+        else
+            -- [Name] [PvP] [Combat]
+            if combatShown then
+                f.combatIcon:ClearAllPoints()
+                f.combatIcon:SetPoint("LEFT", f.nameText, "RIGHT", pvpOffset, 0)
+            end
+        end
+    else
+        if petShown then
+            -- [Name] [PetHappiness] [Combat]
+            f.petHappiness:ClearAllPoints()
+            f.petHappiness:SetPoint("LEFT", f.nameText, "RIGHT", 0, 0)
+            
+            if combatShown then
+                f.combatIcon:ClearAllPoints()
+                f.combatIcon:SetPoint("LEFT", f.petHappiness, "RIGHT", 0, 0)
+            end
+        else
+            -- [Name] [Combat]
+            if combatShown then
+                f.combatIcon:ClearAllPoints()
+                f.combatIcon:SetPoint("LEFT", f.nameText, "RIGHT", -2 * pixel, 0)
+            end
+        end
+    end
+end
+
 -------------------------------------------------
 -- UI BUILDERS (WITH BACKDROPS & MASKS)
 -------------------------------------------------
@@ -243,7 +431,7 @@ local function BuildNameplateUI(plate)
     local typeIconSize = UPConstants.baseHeight
     
 -- Hide Blizzard UI visuals and hijack modern 12.x AurasFrame
-    f:SetScript("OnUpdate", function(self)
+    f:SetScript("OnUpdate", function(self, elapsed)
         if plate.UnitFrame then
             local aurasFrame = plate.UnitFrame.AurasFrame or plate.UnitFrame.BuffFrame
             
@@ -418,6 +606,20 @@ local function BuildNameplateUI(plate)
                 end
             end
         end
+		
+		-- Live Target Shooting / Throwing range check
+		self.rangeCheckTimer = (self.rangeCheckTimer or 0) - (elapsed or 0.05)
+		if self.rangeCheckTimer <= 0 then
+			self.rangeCheckTimer = 0.1
+			if self.unit and SafeUnitCall(UnitIsUnit, self.unit, "target") then
+				UpdateShootingRange(self, self.unit)
+			else
+				if self.shootingIcon and self.shootingIcon:IsShown() then
+					self.shootingIcon:Hide()
+				end
+			end
+		end
+		
         self:SetAlpha(1)
     end)
 	
@@ -436,7 +638,7 @@ local function BuildNameplateUI(plate)
 
     -- HEALTH BAR
     f.healthBar = CreateFrame("StatusBar", nil, f)
-    f.healthBar:SetFrameLevel(4) -- Above Glow
+    f.healthBar:SetFrameLevel(6) -- Above Glow
     f.healthBar:SetSize(width, UPConstants.baseHeight)
     f.healthBar:SetPoint("CENTER", 0, 0)
     f.healthBar:SetStatusBarTexture("Interface\\AddOns\\UnitPlates\\img\\statusbar\\XPerl_StatusBar4")
@@ -533,72 +735,57 @@ local function BuildNameplateUI(plate)
     f.castTime:SetFont(GetFont(), UPConstants.baseHeight * 0.5, "OUTLINE")
     f.castTime:SetPoint("BOTTOMRIGHT", f.castBar, "BOTTOMRIGHT", -1, -(UPConstants.baseHeight * 0.5 * 0.65))
 
-    -- TARGET ARROWS
+    -- TARGET ARROWS (Layered safely above health bar)
     local arrowSize = UPConstants.baseHeight * 1.875
-    f.targetLeft = f:CreateTexture(nil, "ARTWORK")
+    f.targetLeft = CreateIconWrapper(f, arrowSize, "ARTWORK", 8)
     f.targetLeft:SetTexture("Interface\\AddOns\\UnitPlates\\img\\arrow_left")
-    f.targetLeft:SetSize(arrowSize, arrowSize)
     f.targetLeft:SetPoint("LEFT", f.typeIcon, "LEFT", -arrowSize, 0)
     f.targetLeft:SetVertexColor(0.3, 0.7, 1, 1)
     
-    f.targetRight = f:CreateTexture(nil, "ARTWORK")
+    f.targetRight = CreateIconWrapper(f, arrowSize, "ARTWORK", 8)
     f.targetRight:SetTexture("Interface\\AddOns\\UnitPlates\\img\\arrow_right")
-    f.targetRight:SetSize(arrowSize, arrowSize)
     f.targetRight:SetPoint("RIGHT", f.healthBar, "RIGHT", arrowSize, 0)
     f.targetRight:SetVertexColor(0.3, 0.7, 1, 1)
 
     -- ELITE / RARE BORDERS
     local rarityW, rarityH = UPConstants.baseHeight * 2.625, UPConstants.baseHeight * 2.75
     local rarityOffset = rarityW * 0.619
-    f.rarityIcon = f:CreateTexture(nil, "ARTWORK")
+    f.rarityIcon = CreateIconWrapper(f, rarityW, "ARTWORK", 7)
     f.rarityIcon:SetSize(rarityW, rarityH)
     f.rarityIcon:SetPoint("RIGHT", f.typeIcon, "LEFT", rarityOffset, -1)
     f.rarityIcon:SetTexCoord(1, 0, 0, 1)
 
-    f.rarityIconR = f:CreateTexture(nil, "ARTWORK")
+    f.rarityIconR = CreateIconWrapper(f, rarityW, "ARTWORK", 7)
     f.rarityIconR:SetSize(rarityW, rarityH)
     f.rarityIconR:SetPoint("LEFT", f.healthBar, "RIGHT", -rarityOffset, -1)
 
-    -- COMBAT / PVP / SHOOTING / PET STATUS ICONS
-    f.classIcon = f:CreateTexture(nil, "ARTWORK")
-    f.classIcon:SetSize(UPConstants.baseHeight * 1.25, UPConstants.baseHeight * 1.25)
+    -- STATUS & COMBAT ICONS (Wrapped in frames at Level 8 so they never render behind bars)
+    f.classIcon = CreateIconWrapper(f, UPConstants.baseHeight * 1.25, "ARTWORK", 8)
     f.classIcon:SetPoint("RIGHT", f.nameText, "LEFT", -2, 4)
     f.classIcon:SetTexture("Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes")
 
-    f.combatIcon = f:CreateTexture(nil, "OVERLAY")
-    f.combatIcon:SetSize(UPConstants.baseHeight * 1.4, UPConstants.baseHeight * 1.4)
-    f.combatIcon:SetPoint("LEFT", f.nameText, "RIGHT", 2, 0)
+    f.combatIcon = CreateIconWrapper(f, UPConstants.baseHeight * 1.4, "OVERLAY", 8)
     f.combatIcon:SetTexture("Interface\\CharacterFrame\\UI-StateIcon")
     f.combatIcon:SetTexCoord(0.5, 1.0, 0.0, 0.5)
 
-    f.pvpIcon = f:CreateTexture(nil, "ARTWORK")
-    f.pvpIcon:SetSize(UPConstants.baseHeight * 1.8, UPConstants.baseHeight * 1.8)
-    f.pvpIcon:SetPoint("LEFT", f.nameText, "RIGHT", -2, -UPConstants.baseHeight / 4.5)
+    f.pvpIcon = CreateIconWrapper(f, UPConstants.baseHeight * 1.8, "ARTWORK", 8)
+    f.pvpRankIcon = CreateIconWrapper(f, UPConstants.baseHeight * 0.75, "ARTWORK", 8)
 
-    f.pvpRankIcon = f:CreateTexture(nil, "ARTWORK")
-    f.pvpRankIcon:SetSize(UPConstants.baseHeight * 0.75, UPConstants.baseHeight * 0.75)
-    f.pvpRankIcon:SetPoint("LEFT", f.pvpIcon, "RIGHT", 0, 0)
-
-    f.shootingIcon = f:CreateTexture(nil, "OVERLAY")
-    f.shootingIcon:SetSize(UPConstants.baseHeight * 0.9, UPConstants.baseHeight * 0.9)
+    f.shootingIcon = CreateIconWrapper(f, UPConstants.baseHeight * 0.9, "OVERLAY", 8)
     f.shootingIcon:SetPoint("LEFT", f.healthText, "RIGHT", 0, 0)
     f.shootingIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\combat\\arrow_target_1_32")
 
-    f.petHappiness = f:CreateTexture(nil, "OVERLAY")
-    f.petHappiness:SetSize(UPConstants.baseHeight * 1.1, UPConstants.baseHeight * 1.1)
-    f.petHappiness:SetPoint("LEFT", f.nameText, "RIGHT", 0, 0)
+    f.petHappiness = CreateIconWrapper(f, UPConstants.baseHeight * 1.1, "OVERLAY", 8)
     f.petHappiness:SetTexture("Interface\\PetPaperDollFrame\\UI-PetHappiness")
 	
 	-- QUEST ICON
-    f.questIcon = f.textLayerHost:CreateTexture(nil, "OVERLAY")
-    f.questIcon:SetSize(UPConstants.baseHeight * 1.1, UPConstants.baseHeight * 1.1)
+    f.questIcon = CreateIconWrapper(f, UPConstants.baseHeight * 1.1, "OVERLAY", 8)
     f.questIcon:SetPoint("RIGHT", f.nameText, "LEFT", -2, 0)
     f.questIcon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\quest\\slay")
-    f.questIcon:Hide()
 
     -- COMBO POINTS
     f.combopoints = CreateFrame("Frame", nil, f)
-    f.combopoints:SetFrameLevel(f.healthBar:GetFrameLevel() + 3)
+    f.combopoints:SetFrameLevel(f.healthBar:GetFrameLevel() - 2)
     f.combopoints:SetSize(1, 1)
     f.combopoints.orbs = {}
     local cpSize = UPConstants.baseHeight * 0.5625
@@ -818,9 +1005,10 @@ end
 
 local function UpdateComboPoints(f, unit)
     if not unit then return end
+    local showed = false
     if SafeUnitCall(UnitIsUnit, unit, "target") then
         local points = UnitPower("player", 4)
-        if not issecretvalue(points) and points > 0 then
+        if not issecretvalue(points) and points and points > 0 then
             for i = 1, 5 do
                 if i <= points then
                     f.combopoints.orbs[i]:SetVertexColor(1, 0.224, 0.027, 1)
@@ -829,10 +1017,16 @@ local function UpdateComboPoints(f, unit)
                 end
             end
             f.combopoints:Show()
-            return
+            showed = true
         end
     end
-    f.combopoints:Hide()
+    
+    if not showed then
+        f.combopoints:Hide()
+    end
+    
+    -- Dynamically shifts Name and Guild above the combo points if shown, or down if hidden!
+    UpdateNameAndGuildPosition(f)
 end
 
 local raidTargetCoords = {
@@ -1116,19 +1310,7 @@ local function UpdateUnitInfo(f, unit)
     end
 
     -- Safe Range Checker
-    local canAttack = UnitCanAttack and SafeUnitCall(UnitCanAttack, "player", unit)
-
-    if canAttack then
-        local success, inRangeAuto = pcall(IsSpellInRange, "Auto Shot", unit)
-        local success2, inRangeShoot = pcall(IsSpellInRange, "Shoot", unit)
-        if (success and inRangeAuto == 1) or (success2 and inRangeShoot == 1) then
-            f.shootingIcon:Show()
-        else
-            f.shootingIcon:Hide()
-        end
-    else
-        f.shootingIcon:Hide()
-    end
+    UpdateShootingRange(f, unit)
     
     if f.classIcon:IsShown() then
         f.auras:SetPoint("BOTTOM", f.nameText, "TOP", 0, (UPConstants.baseHeight * 1.25) / 2 + 4)
@@ -1200,7 +1382,9 @@ local function UpdateUnitInfo(f, unit)
     end
     
     ApplyDynamicWidth(f, unit)
-	UpdateRaidTarget(f, unit)
+    UpdateNameAndGuildPosition(f)
+    UpdateStatusIconPositions(f)
+    UpdateRaidTarget(f, unit)
 end
 
 local function UpdateAuras(f, unit)
@@ -1474,7 +1658,8 @@ MainFrame:SetScript("OnEvent", function(self, event, unit, ...)
         for u, f in pairs(ActivePlates) do
             UpdateHealth(f, u)
             UpdateTarget(f, u)
-            UpdateRaidTarget(f, u) -- Add this line!
+            UpdateRaidTarget(f, u)
+			UpdateShootingRange(f, u)
         end
 		
 	elseif event == "RAID_TARGET_UPDATE" then
