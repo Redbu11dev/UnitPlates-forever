@@ -436,7 +436,7 @@ local function BuildNameplateUI(plate)
 
     -- HEALTH BAR
     f.healthBar = CreateFrame("StatusBar", nil, f)
-    f.healthBar:SetFrameLevel(3) -- Above Glow
+    f.healthBar:SetFrameLevel(4) -- Above Glow
     f.healthBar:SetSize(width, UPConstants.baseHeight)
     f.healthBar:SetPoint("CENTER", 0, 0)
     f.healthBar:SetStatusBarTexture("Interface\\AddOns\\UnitPlates\\img\\statusbar\\XPerl_StatusBar4")
@@ -445,7 +445,7 @@ local function BuildNameplateUI(plate)
 
     -- POWER BAR
     f.powerBar = CreateFrame("StatusBar", nil, f)
-    f.powerBar:SetFrameLevel(3)
+    f.powerBar:SetFrameLevel(5)
     f.powerBar:SetSize(width, UPConstants.baseHeight / 2)
     f.powerBar:SetPoint("TOP", f.healthBar, "BOTTOM", 0, 0)
     f.powerBar:SetStatusBarTexture("Interface\\AddOns\\UnitPlates\\img\\statusbar\\XPerl_StatusBar7")
@@ -474,6 +474,13 @@ local function BuildNameplateUI(plate)
     f.typeIcon.icon:SetAllPoints()
     f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\loading.tga")
     ApplyMaskedBorders(f.typeIcon)
+	
+	f.typeIcon.textIcon = f.typeIcon:CreateFontString(nil, "ARTWORK")
+    --f.typeIcon.textIcon:SetAllPoints()
+	f.typeIcon.textIcon:SetPoint("CENTER", f.typeIcon, "CENTER", 0, 0)
+    f.typeIcon.textIcon:SetFont(GetFont(), UPConstants.baseHeight, "OUTLINE")
+    f.typeIcon.textIcon:SetJustifyH("CENTER")
+    f.typeIcon.textIcon:SetJustifyV("MIDDLE")
 
     -- TEXT LAYER WRAPPER
     f.textLayerHost = CreateFrame("Frame", nil, f)
@@ -625,6 +632,14 @@ local function BuildNameplateUI(plate)
     for i = 1, 16 do
         f.auraIcons[i] = CreateAuraIcon(f.auras)
     end
+	
+	-- RAID TARGET ICON
+    local raidIconSize = UPConstants.baseHeight * 2.5
+    f.raidIcon = f.textLayerHost:CreateTexture(nil, "OVERLAY")
+    f.raidIcon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+    f.raidIcon:SetSize(raidIconSize, raidIconSize)
+    f.raidIcon:SetPoint("BOTTOM", f.auras, "TOP", 0, 4)
+    f.raidIcon:Hide()
 
     f:Hide()
     return f
@@ -820,6 +835,60 @@ local function UpdateComboPoints(f, unit)
     f.combopoints:Hide()
 end
 
+local raidTargetCoords = {
+    [1] = {0, 0.25, 0, 0.25},       -- Star
+    [2] = {0.25, 0.5, 0, 0.25},      -- Circle
+    [3] = {0.5, 0.75, 0, 0.25},      -- Diamond
+    [4] = {0.75, 1, 0, 0.25},        -- Triangle
+    [5] = {0, 0.25, 0.25, 0.5},      -- Moon
+    [6] = {0.25, 0.5, 0.25, 0.5},    -- Square
+    [7] = {0.5, 0.75, 0.25, 0.5},    -- Cross
+    [8] = {0.75, 1, 0.25, 0.5},      -- Skull
+}
+
+local function UpdateRaidTarget(f, unit)
+    if not unit or not f or not f.raidIcon then return end
+    
+    -- 1. Query marker (with fallback to "target" if currently targeted)
+    local ok, index = pcall(GetRaidTargetIndex, unit)
+    if (not ok or not index) and SafeUnitCall(UnitIsUnit, unit, "target") then
+        ok, index = pcall(GetRaidTargetIndex, "target")
+    end
+    
+    -- If no marker is set on the unit, GetRaidTargetIndex returns nil
+    if not ok or not index then
+        f.raidIcon:Hide()
+        return
+    end
+
+    -- 2. Pass the index directly into Blizzard's C-engine function!
+    -- SetRaidTargetIconTexture accepts secret numbers natively without Lua errors.
+    local setOk = false
+    if SetRaidTargetIconTexture then
+        setOk = pcall(SetRaidTargetIconTexture, f.raidIcon, index)
+    end
+    
+    -- Fallback for non-secret numbers if SetRaidTargetIconTexture was missing
+    if not setOk and not issecretvalue(index) and raidTargetCoords[index] then
+        f.raidIcon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+        f.raidIcon:SetTexCoord(unpack(raidTargetCoords[index]))
+        setOk = true
+    end
+
+    if setOk then
+        f.raidIcon:ClearAllPoints()
+        -- Float cleanly above auras if auras are visible, otherwise right above the name
+        if f.auras and f.auras:IsShown() then
+            f.raidIcon:SetPoint("BOTTOM", f.auras, "TOP", 0, 4)
+        else
+            f.raidIcon:SetPoint("BOTTOM", f.nameText, "TOP", 0, 4)
+        end
+        f.raidIcon:Show()
+    else
+        f.raidIcon:Hide()
+    end
+end
+
 local function UpdateUnitInfo(f, unit)
     if not unit then return end
 
@@ -950,14 +1019,33 @@ local function UpdateUnitInfo(f, unit)
         else
             f.pvpRankIcon:Hide()
         end
-    else
+    else	
         local okType, cType = pcall(UnitCreatureType, unit)
-		--print("cType "..cType)
-        if okType and not issecretvalue(cType) and cType and cType ~= "Not specified" then
-            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\" .. string.upper(cType) .. ".tga")
-        else
-            f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\UNKNOWN.tga")
-        end
+    
+		if okType and cType then
+			if not issecretvalue(cType) and cType ~= "Not specified" then
+				-- Non-secret: regular SetTexture
+				f.typeIcon.textIcon:SetText("")
+				f.typeIcon.icon:Show()
+				--local cleanType = string.upper(cType)
+				local cleanType = cType
+				f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\" .. cleanType .. ".tga")
+			else
+				-- Secret: Hide texture widget, let FontString render the texture via C++ formatting!
+				f.typeIcon.icon:Hide()
+				local iconSize = UPConstants.baseHeight - 2
+				-- Passes %s straight into C++ sprintf to build the |T...|t tag without Lua string concatenation
+				f.typeIcon.textIcon:SetFormattedText("|TInterface\\AddOns\\UnitPlates\\img\\creaturetypes\\%s:%d:%d|t", cType, iconSize, iconSize)
+				
+				--f.typeIcon.textIcon:SetFormattedText("%s", cType, iconSize, iconSize) --debug
+				f.typeIcon.textIcon:Show()
+			end
+		else
+			f.typeIcon.textIcon:SetText("")
+			f.typeIcon.icon:Show()
+			f.typeIcon.icon:SetTexture("Interface\\AddOns\\UnitPlates\\img\\creaturetypes\\UNKNOWN.tga")
+		end
+		
         f.classIcon:Hide()
         f.pvpRankIcon:Hide()
     end
@@ -1112,6 +1200,7 @@ local function UpdateUnitInfo(f, unit)
     end
     
     ApplyDynamicWidth(f, unit)
+	UpdateRaidTarget(f, unit)
 end
 
 local function UpdateAuras(f, unit)
@@ -1346,6 +1435,7 @@ MainFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
 MainFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
 MainFrame:RegisterEvent("UNIT_FACTION")
 MainFrame:RegisterEvent("UNIT_THREAT_LIST_UPDATE")
+MainFrame:RegisterEvent("RAID_TARGET_UPDATE")
 
 MainFrame:SetScript("OnEvent", function(self, event, unit, ...)
     if event == "ADDON_LOADED" and unit == addonName then
@@ -1370,6 +1460,7 @@ MainFrame:SetScript("OnEvent", function(self, event, unit, ...)
         UpdateAuras(plate.UPFrame, unit)
         UpdateCastBar(plate.UPFrame, unit)
         UpdateTarget(plate.UPFrame, unit)
+		UpdateRaidTarget(plate.UPFrame, unit)
 
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
         local plate = C_NamePlate.GetNamePlateForUnit(unit)
@@ -1383,6 +1474,12 @@ MainFrame:SetScript("OnEvent", function(self, event, unit, ...)
         for u, f in pairs(ActivePlates) do
             UpdateHealth(f, u)
             UpdateTarget(f, u)
+            UpdateRaidTarget(f, u) -- Add this line!
+        end
+		
+	elseif event == "RAID_TARGET_UPDATE" then
+        for u, f in pairs(ActivePlates) do
+            UpdateRaidTarget(f, u)
         end
 
     elseif ActivePlates[unit] then
