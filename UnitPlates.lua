@@ -24,10 +24,10 @@ local defaultSettings = {
     onlyYourDebuffs = false,
     enableWoWTranslateSupport = true,
     enableChatBubbleHandling = true,
-    overlapping = true,
-    scale = 1.4,
-    aurasInRow = 6,
-    aurasInRowTrivial = 4,
+    scale = 1.35,
+	nameplateSelectedScale = 1.1,
+    aurasInRow = 5,
+    aurasInRowTrivial = 5,
     nameplateWidthPercent = 65,
     nameplateWidthPercentTrivial = 45,
     selectionGlowScale = 100,
@@ -70,7 +70,17 @@ if not ScaleTo100Curve and C_CurveUtil and C_CurveUtil.CreateCurve and Enum and 
     ScaleTo100Curve:AddPoint(1, 100)
 end
 
+-- Step Curve to hide percentage text when health is full (>= 100%)
+local HideAtFullHealthCurve
+if C_CurveUtil and C_CurveUtil.CreateColorCurve and Enum and Enum.LuaCurveType and CreateColor then
+    HideAtFullHealthCurve = C_CurveUtil.CreateColorCurve()
+    HideAtFullHealthCurve:SetType(Enum.LuaCurveType.Step)
+    HideAtFullHealthCurve:AddPoint(0, CreateColor(1, 1, 1, 1)) -- < 1.0 (< 100%): Visible (Alpha = 1)
+    HideAtFullHealthCurve:AddPoint(1, CreateColor(1, 1, 1, 0)) -- >= 1.0 (100%): Hidden (Alpha = 0)
+end
+
 local function GetFont() return UPConstants.font end
+local function GetNameFont() return UNIT_NAME_FONT or STANDARD_TEXT_FONT or "Fonts\\ARIALN.TTF" end
 
 local powerColors = {
     [0] = {0, 0, 0.9, 1}, -- Mana
@@ -513,35 +523,28 @@ local function BuildNameplateUI(plate)
 -- Throttled update loop (Runs at ~20 FPS instead of uncapped 144+ FPS)
     -- Highly optimized, throttled update loop (Zero table allocations per tick)
     f:SetScript("OnUpdate", function(self, elapsed)
-        local dt = elapsed or 0.25
-        self.updateThrottle = (self.updateThrottle or 0) - dt
-        if self.updateThrottle > 0 then return end
-        self.updateThrottle = 0.25 -- 20 FPS tick rate
-		
-		-- 5. Live Target Shooting / Throwing range check
-        if self.unit and SafeUnitCall(UnitIsUnit, self.unit, "target") then
-            UpdateShootingRange(self, self.unit)
-        else
-            if self.shootingIcon and self.shootingIcon:IsShown() then
-                self.shootingIcon:Hide()
-            end
-        end
+        local dt = elapsed or 0.05
 
         if plate.UnitFrame then
             local aurasFrame = plate.UnitFrame.AurasFrame or plate.UnitFrame.BuffFrame
             
-            -- Fast check: hide known frames
-            for i = 1, #explicitHideFrames do
-                local frame = plate.UnitFrame[explicitHideFrames[i]]
-                if frame and frame:GetAlpha() ~= 0 then
-                    frame:SetAlpha(0)
-                end
-            end
+			--does not need to happen super often
+			self.hideFramesTimer = (self.hideFramesTimer or 0) - dt
+			if self.hideFramesTimer <= 0 then
+				self.hideFramesTimer = 1.0
+				-- Fast check: hide known frames
+				for i = 1, #explicitHideFrames do
+					local frame = plate.UnitFrame[explicitHideFrames[i]]
+					if frame and frame:GetAlpha() ~= 0 then
+						frame:SetAlpha(0)
+					end
+				end
+			end
 
-            -- Slow-cycle deep sweep (runs every 0.5s instead of 0.05s to eliminate CPU waste)
+            -- Slow-cycle deep sweep
             self.deepSweepTimer = (self.deepSweepTimer or 0) - dt
             if self.deepSweepTimer <= 0 then
-                self.deepSweepTimer = 0.5
+                self.deepSweepTimer = 0.25
                 
                 local numChildren = plate.UnitFrame:GetNumChildren()
                 for i = 1, numChildren do
@@ -563,6 +566,7 @@ local function BuildNameplateUI(plate)
                 end
             end
 
+			--this only makes sense for enemy nameplates? probably not
             -- 4. Scrape & Separate Auras in Combat
             local inCombat = InCombatLockdown() or UnitAffectingCombat("player")
             if aurasFrame then
@@ -655,6 +659,21 @@ local function BuildNameplateUI(plate)
         end
 
         self:SetAlpha(1)
+		
+		--other slow updates
+		self.updateThrottle = (self.updateThrottle or 0) - dt
+        if self.updateThrottle > 0 then return end
+        self.updateThrottle = 0.05 -- 20 FPS tick rate
+		
+		--this only makes sense for target, if you have one
+		-- 5. Live Target Shooting / Throwing range check
+        if self.unit and SafeUnitCall(UnitIsUnit, self.unit, "target") then
+            UpdateShootingRange(self, self.unit)
+        else
+            if self.shootingIcon and self.shootingIcon:IsShown() then
+                self.shootingIcon:Hide()
+            end
+        end
     end)
 	
     -- GLOW FRAME (Bottom Layer)
@@ -681,9 +700,9 @@ local function BuildNameplateUI(plate)
 
     -- POWER BAR
     f.powerBar = CreateFrame("StatusBar", nil, f)
-    f.powerBar:SetFrameLevel(5)
-    f.powerBar:SetSize(width, UPConstants.baseHeight / 2)
-    f.powerBar:SetPoint("TOP", f.healthBar, "BOTTOM", 0, 0)
+    f.powerBar:SetFrameLevel(9)
+    f.powerBar:SetSize(width, UPConstants.baseHeight / 2.5)
+    f.powerBar:SetPoint("TOP", f.healthBar, "BOTTOM", 0, -1)
     f.powerBar:SetStatusBarTexture("Interface\\AddOns\\UnitPlates\\img\\statusbar\\XPerl_StatusBar7")
     --ApplyMaskedBorders(f.powerBar)
 	local padding = 2.5
@@ -732,12 +751,12 @@ local function BuildNameplateUI(plate)
     f.healthPercent:SetPoint("CENTER", f.healthBar, "CENTER", 0, 0)
 
     f.nameText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.nameText:SetFont(GameFontNormal:GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.nameText:SetFont(GetNameFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
     f.nameText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
 	
 	-- GUILD / NPC OCCUPATION TEXT
     f.guildText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.guildText:SetFont(GameFontNormal:GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.guildText:SetFont(GetNameFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
     f.guildText:Hide()
 
     f.levelText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
@@ -745,7 +764,7 @@ local function BuildNameplateUI(plate)
     f.levelText:SetPoint("BOTTOMLEFT", f.healthBar, "BOTTOMLEFT", 2, -(UPConstants.baseHeight * 0.3))
 
     f.powerText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.powerText:SetFont(GetFont(), UPConstants.baseHeight * 0.45, "OUTLINE")
+    f.powerText:SetFont(GetFont(), UPConstants.baseHeight * 0.4, "OUTLINE")
     f.powerText:SetPoint("BOTTOMRIGHT", f.powerBar, "BOTTOMRIGHT", -1, -(UPConstants.baseHeight * 0.3))
 
     -- CAST BAR
@@ -762,7 +781,7 @@ local function BuildNameplateUI(plate)
     f.castIcon:SetPoint("RIGHT", f.castBar, "LEFT", -2, 0)
     
     f.castName = f.castBar:CreateFontString(nil, "OVERLAY")
-    f.castName:SetFont(GameFontNormal:GetFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.castName:SetFont(GetNameFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
     f.castName:SetPoint("TOP", f.castBar, "BOTTOM", 0, -2)
 	
 	f.castTime = f.castBar:CreateFontString(nil, "OVERLAY")
@@ -898,7 +917,7 @@ local function UpdateHealth(f, unit)
     f.healthBar:SetMinMaxValues(0, maxHp)
     f.healthBar:SetValue(hp)
 
-    -- === 1. NON-SECRET VALUES ===
+	-- === 1. NON-SECRET VALUES ===
     if not issecretvalue(hp) and not issecretvalue(maxHp) then
         if maxHp <= 0 then maxHp = 1 end
         local pct = math.floor((hp / maxHp) * 100)
@@ -908,6 +927,7 @@ local function UpdateHealth(f, unit)
         local inCombat = SafeUnitCall(UnitAffectingCombat, queryUnit)
         if pct < 100 or inCombat then
             f.healthPercent:SetText(pct .. "%")
+            f.healthPercent:SetAlpha(1) -- Ensure visible
         else
             f.healthPercent:SetText("")
         end
@@ -929,6 +949,16 @@ local function UpdateHealth(f, unit)
             local success = pcall(function()
                 local pct = curve and UnitHealthPercent(queryUnit, true, curve) or UnitHealthPercent(queryUnit)
                 f.healthPercent:SetFormattedText("%.0f%%", pct)
+                
+                -- Check if full health via C++ Step Curve (Hides at 100%, shows when damaged)
+                if HideAtFullHealthCurve then
+                    local color = UnitHealthPercent(queryUnit, true, HideAtFullHealthCurve)
+                    if color and color.GetRGBA then
+                        f.healthPercent:SetAlpha(select(4, color:GetRGBA()))
+                    end
+                else
+                    f.healthPercent:SetAlpha(1)
+                end
             end)
             if success then showedPercent = true end
         end
@@ -940,6 +970,7 @@ local function UpdateHealth(f, unit)
             
             if blizzText and blizzText.GetText and blizzText:GetText() then
                 f.healthPercent:SetFormattedText("%s", blizzText:GetText())
+                f.healthPercent:SetAlpha(1)
                 showedPercent = true
             end
         end
@@ -1010,19 +1041,46 @@ local function UpdatePower(f, unit)
     local maxPower = UnitPowerMax(queryUnit)
     local power = UnitPower(queryUnit)
     local pType = UnitPowerType(queryUnit)
-    
-    local hasPower = true
-    if not issecretvalue(maxPower) then
-        if maxPower <= 0 then hasPower = false end
+    local isPlayer = SafeUnitCall(UnitIsPlayer, queryUnit)
+
+    local hasPower = false
+
+    -- 1. All player characters always have a power bar (Mana, Rage, Energy, etc.)
+    if isPlayer then
+        hasPower = true
+
+    -- 2. Non-secret check (Open world and non-restricted units)
+    elseif not issecretvalue(maxPower) then
+        hasPower = (maxPower ~= nil and maxPower > 0)
+
+    -- 3. Secret value check (In-combat & Dungeons):
+    -- When maxPower is 0 (0/0), C++ returns nil because division by zero is undefined.
+    -- For a Warrior or Rogue with 0 current power, UnitPowerPercent returns 0.0 (non-nil), confirming power exists!
+    else
+        -- Critters never have power
+        if IsTrivial(queryUnit) then
+            hasPower = false
+        else
+            local ok, pct = pcall(UnitPowerPercent, queryUnit)
+            if ok and pct ~= nil then
+                hasPower = true
+            elseif pType == 1 or pType == 3 then
+                -- Rage (1) and Energy (3) units always have a 100 power pool
+                hasPower = true
+            else
+                hasPower = false
+            end
+        end
     end
     
     if hasPower then
         f.powerBar:SetMinMaxValues(0, maxPower)
         f.powerBar:SetValue(power)
         
-        local color = powerColors[pType] or powerColors[3]
+        local color = powerColors[pType] or powerColors[0]
         f.powerBar:SetStatusBarColor(unpack(color))
         f.powerBar:Show()
+        if f.powerBar.bgOffsetFrame then f.powerBar.bgOffsetFrame:Show() end
         
         if not issecretvalue(power) then
             f.powerText:SetText(UPCoreAbbreviate(power))
@@ -1035,6 +1093,7 @@ local function UpdatePower(f, unit)
         end
     else
         f.powerBar:Hide()
+        if f.powerBar.bgOffsetFrame then f.powerBar.bgOffsetFrame:Hide() end
         f.powerText:SetText("")
     end
 end
@@ -1122,8 +1181,14 @@ end
 local function UpdateUnitInfo(f, unit)
     if not unit then return end
 
-    -- Safe Unit Name handling
-    local okName, name = pcall(UnitName, unit)
+     -- Safe Unit Name handling (Fetches WoW Forever's two-word "First Last" name)
+    local okName, name = pcall(GetUnitName, unit)
+    
+    -- If GetUnitName is unavailable or empty, fall back to UnitName
+    if not okName or not name or (not issecretvalue(name) and name == "") then
+        okName, name = pcall(UnitName, unit)
+    end
+
     if okName and name then
         if issecretvalue(name) then
             f.nameText:SetFormattedText("%s", name)
@@ -1648,6 +1713,11 @@ MainFrame:SetScript("OnEvent", function(self, event, unit, ...)
         InitSettings()
     elseif event == "PLAYER_ENTERING_WORLD" then
         SetCVar("nameplateShowEnemies", 1)
+		SetCVar("nameplateSelectedScale", UnitPlatesSettings.nameplateSelectedScale or 1.0)
+        SetCVar("nameplateLargerScale", UnitPlatesSettings.nameplateSelectedScale or 1.0)
+		
+		SetCVar("nameplateMinScale", 1.0)
+        SetCVar("nameplateMaxScale", 1.0)
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         local plate = C_NamePlate.GetNamePlateForUnit(unit)
         if not plate then return end
@@ -1745,15 +1815,29 @@ local function BuildOptionsUI()
 
     local closeBtn = CreateFrame("Button", nil, OptionsFrame, "UIPanelButtonTemplate")
     closeBtn:SetSize(80, 25)
-    closeBtn:SetPoint("BOTTOMRIGHT", -10, 10)
+    closeBtn:SetPoint("TOPRIGHT", 0, 0)
     closeBtn:SetText("Close")
-    closeBtn:SetScript("OnClick", function() OptionsFrame:Hide() end)
+    closeBtn:SetScript("OnClick", function() 
+		OptionsFrame:Hide()
+	end)
+	
+	local saveBtn = CreateFrame("Button", nil, OptionsFrame, "UIPanelButtonTemplate")
+    saveBtn:SetSize(160, 25)
+    saveBtn:SetPoint("BOTTOMRIGHT", -10, 10)
+    saveBtn:SetText("Save & Reload")
+    saveBtn:SetScript("OnClick", function() 
+		--OptionsFrame:Hide()
+		ReloadUI() 
+	end)
     
     local defaultBtn = CreateFrame("Button", nil, OptionsFrame, "UIPanelButtonTemplate")
     defaultBtn:SetSize(160, 25)
     defaultBtn:SetPoint("BOTTOMLEFT", 10, 10)
     defaultBtn:SetText("Set defaults & Reload")
-    defaultBtn:SetScript("OnClick", function() LoadDefaultSettings(); ReloadUI() end)
+    defaultBtn:SetScript("OnClick", function() 
+		LoadDefaultSettings()
+		ReloadUI() 
+	end)
 
     local scrollFrame = CreateFrame("ScrollFrame", "UPScrollFrame", OptionsFrame, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 10, -50)
@@ -1829,30 +1913,43 @@ local function BuildOptionsUI()
     uiTitle:SetTextColor(0.999, 0.819, 0)
     uiTitle:SetText("--- UI:")
 
-    local chkOverlap = CreateFrame("CheckButton", nil, container, "UICheckButtonTemplate")
-    chkOverlap:SetPoint("TOPLEFT", uiTitle, "BOTTOMLEFT", 0, -5)
-    chkOverlap.Text:SetText("Overlapping (Recommended)")
-    chkOverlap:SetChecked(UnitPlatesSettings.overlapping)
-    chkOverlap:SetScript("OnClick", function(self) UnitPlatesSettings.overlapping = self:GetChecked() end)
-
-    local sldScale = CreateFrame("Slider", "UPScaleSlider", container, "OptionsSliderTemplate")
-    sldScale:SetPoint("TOPLEFT", chkOverlap, "BOTTOMLEFT", 0, -20)
+	local sldScale = CreateFrame("Slider", "UPScaleSlider", container, "OptionsSliderTemplate")
+    sldScale:SetPoint("TOPLEFT", uiTitle, "BOTTOMLEFT", 0, -20)
     sldScale:SetWidth(350)
     sldScale:SetMinMaxValues(0.5, 3.0)
-    sldScale:SetValueStep(0.1)
+    sldScale:SetValueStep(0.05)
+    sldScale:SetObeyStepOnDrag(true) -- Snaps the slider thumb to the 0.05 increments while dragging
     sldScale:SetValue(UnitPlatesSettings.scale)
     _G[sldScale:GetName().."Low"]:SetText("0.5")
     _G[sldScale:GetName().."High"]:SetText("3.0")
-    _G[sldScale:GetName().."Text"]:SetText("Scale: " .. UnitPlatesSettings.scale)
+    _G[sldScale:GetName().."Text"]:SetText(string.format("Scale: %.2f", UnitPlatesSettings.scale))
     sldScale:SetScript("OnValueChanged", function(self, val)
-        val = math.floor(val * 10 + 0.5) / 10
+        val = math.floor(val * 20 + 0.5) / 20 -- Rounds to nearest 0.05
         UnitPlatesSettings.scale = val
-        _G[self:GetName().."Text"]:SetText("Scale: " .. val)
+        _G[self:GetName().."Text"]:SetText(string.format("Scale: %.2f", val))
         for _, f in pairs(ActivePlates) do f:SetScale(val) end
     end)
     
+    local sldSelectedScale = CreateFrame("Slider", "UPSelectedScaleSlider", container, "OptionsSliderTemplate")
+    sldSelectedScale:SetPoint("TOPLEFT", sldScale, "BOTTOMLEFT", 0, -25)
+    sldSelectedScale:SetWidth(350)
+    sldSelectedScale:SetMinMaxValues(0.5, 2.0)
+    sldSelectedScale:SetValueStep(0.05)
+    sldSelectedScale:SetObeyStepOnDrag(true) -- Snaps the slider thumb to the 0.05 increments while dragging
+    sldSelectedScale:SetValue(UnitPlatesSettings.nameplateSelectedScale or 1.0)
+    _G[sldSelectedScale:GetName().."Low"]:SetText("0.5")
+    _G[sldSelectedScale:GetName().."High"]:SetText("2.0")
+    _G[sldSelectedScale:GetName().."Text"]:SetText(string.format("Target plate scale: %.2f", (UnitPlatesSettings.nameplateSelectedScale or 1.0)))
+    sldSelectedScale:SetScript("OnValueChanged", function(self, val)
+        val = math.floor(val * 20 + 0.5) / 20 -- Rounds to nearest 0.05
+        UnitPlatesSettings.nameplateSelectedScale = val
+        _G[self:GetName().."Text"]:SetText(string.format("Target plate scale: %.2f", val))
+        SetCVar("nameplateSelectedScale", val)
+        SetCVar("nameplateLargerScale", val)
+    end)
+    
     local sldGlowScale = CreateFrame("Slider", "UPGlowScaleSlider", container, "OptionsSliderTemplate")
-    sldGlowScale:SetPoint("TOPLEFT", sldScale, "BOTTOMLEFT", 0, -25)
+    sldGlowScale:SetPoint("TOPLEFT", sldSelectedScale, "BOTTOMLEFT", 0, -25)
     sldGlowScale:SetWidth(350)
     sldGlowScale:SetMinMaxValues(100, 300)
     sldGlowScale:SetValueStep(1)
@@ -1923,10 +2020,12 @@ local function BuildOptionsUI()
         chkMineBuffs:SetChecked(UnitPlatesSettings.onlyYourBuffs)
         chkDebuffs:SetChecked(UnitPlatesSettings.showDebuffs)
         chkMineDebuffs:SetChecked(UnitPlatesSettings.onlyYourDebuffs)
-        chkOverlap:SetChecked(UnitPlatesSettings.overlapping)
         
         sldScale:SetValue(UnitPlatesSettings.scale)
-        _G[sldScale:GetName().."Text"]:SetText("Scale: " .. UnitPlatesSettings.scale)
+        _G[sldScale:GetName().."Text"]:SetText(string.format("Scale: %.2f", UnitPlatesSettings.scale))
+		
+		sldSelectedScale:SetValue(UnitPlatesSettings.nameplateSelectedScale or 1.0)
+        _G[sldSelectedScale:GetName().."Text"]:SetText(string.format("Target plate scale: %.2f", (UnitPlatesSettings.nameplateSelectedScale or 1.0)))
         
         sldGlowScale:SetValue(UnitPlatesSettings.selectionGlowScale)
         _G[sldGlowScale:GetName().."Text"]:SetText("Selection glow scale %: " .. UnitPlatesSettings.selectionGlowScale)
