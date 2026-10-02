@@ -80,7 +80,13 @@ if C_CurveUtil and C_CurveUtil.CreateColorCurve and Enum and Enum.LuaCurveType a
 end
 
 local function GetFont() return UPConstants.font end
-local function GetNameFont() return UNIT_NAME_FONT or STANDARD_TEXT_FONT or "Fonts\\ARIALN.TTF" end
+
+-- Create an outlined FontObject that inherits Blizzard's Chinese & Russian font fallbacks
+local UPNameFont = CreateFont("UPNameFont")
+UPNameFont:CopyFontObject(SystemFont_NamePlate_Outlined or SystemFont_NamePlate or GameFontNormal)
+local fontFile, fontHeight = UPNameFont:GetFont()
+UPNameFont:SetFont(fontFile, fontHeight, "OUTLINE")
+UPNameFont:SetShadowOffset(0, 0) -- Removes blurry shadow so the outline is sharp
 
 local powerColors = {
     [0] = {0, 0, 0.9, 1}, -- Mana
@@ -95,6 +101,56 @@ local classCoords = {
     ["PRIEST"] = {0.5, 0.75, 0.25, 0.5}, ["WARLOCK"] = {0.75, 1, 0.25, 0.5},
     ["PALADIN"] = {0, 0.25, 0.5, 0.75}, ["DEATHKNIGHT"] = {0.25, 0.5, 0.5, 0.75},
 }
+
+-- Shaman Totem Spell IDs (Automatically resolves localized names & icons across all languages)
+local ShamanTotemSpellIDs = {
+    -- Earth
+    8071, 2484, 5730, 8075, 8143,
+    -- Fire
+    3599, 1535, 8190, 8181, 8227,
+    -- Water
+    5394, 5675, 8166, 8170, 8184, 16190,
+    -- Air
+    8835, 8512, 10595, 15107, 8177, 6495, 2895
+}
+
+local TotemCache = {}
+local function InitTotemCache()
+    for _, id in ipairs(ShamanTotemSpellIDs) do
+        local name, icon
+        if C_Spell and C_Spell.GetSpellInfo then
+            local info = C_Spell.GetSpellInfo(id)
+            if info then name = info.name; icon = info.iconID end
+        else
+            name, _, icon = GetSpellInfo(id)
+        end
+        if name and icon then
+            TotemCache[string.lower(name)] = icon
+        end
+    end
+end
+InitTotemCache()
+
+local function GetTotemIcon(name)
+    if not name or issecretvalue(name) then return nil end
+    local lower = string.lower(name)
+    if TotemCache[lower] then return TotemCache[lower] end
+    
+    -- Strip trailing ranks or numerals (e.g., "Stoneskin Totem IV" -> "Stoneskin Totem")
+    local clean = lower:gsub("%s+[ivxlcdm]+$", "")
+    if TotemCache[clean] then return TotemCache[clean] end
+    
+    for tName, icon in pairs(TotemCache) do
+        if string.find(lower, tName, 1, true) then
+            return icon
+        end
+    end
+    
+    if string.find(lower, "totem") or string.find(lower, "тотем") then
+        return "Interface\\Icons\\Spell_Nature_GroundingTotem"
+    end
+    return nil
+end
 
 local ActivePlates = {}
 
@@ -223,6 +279,23 @@ end
 -- Original 1.12 dynamic Name, Guild, Auras, and Raid Icon positioning
 local function UpdateNameAndGuildPosition(f)
     if not f or not f.nameText or not f.healthBar then return end
+	
+	-- If this is a totem, anchor the name cleanly right above the totem icon
+    if f.isTotem and f.totemFrame and f.totemFrame:IsShown() then
+        f.nameText:ClearAllPoints()
+        f.nameText:SetPoint("BOTTOM", f.totemFrame, "TOP", 0, 4)
+        f.nameText:Show()
+        if f.guildText then f.guildText:Hide() end
+        if f.auras then
+            f.auras:ClearAllPoints()
+            f.auras:SetPoint("BOTTOM", f.nameText, "TOP", 0, 4)
+        end
+        if f.raidIcon and f.raidIcon:IsShown() then
+            f.raidIcon:ClearAllPoints()
+            f.raidIcon:SetPoint("BOTTOM", f.nameText, "TOP", 0, 4)
+        end
+        return
+    end
 
     local hasGuild = f.guildText and f.guildText:IsShown() and f.guildText:GetText() and f.guildText:GetText() ~= ""
     local hasCP = f.combopoints and f.combopoints:IsShown()
@@ -751,12 +824,14 @@ local function BuildNameplateUI(plate)
     f.healthPercent:SetPoint("CENTER", f.healthBar, "CENTER", 0, 0)
 
     f.nameText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.nameText:SetFont(GetNameFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.nameText:SetFontObject(UPNameFont)
+    f.nameText:SetTextHeight(UPConstants.baseHeight * 0.6875)
     f.nameText:SetPoint("BOTTOM", f.healthBar, "TOP", 0, 2)
 	
 	-- GUILD / NPC OCCUPATION TEXT
     f.guildText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
-    f.guildText:SetFont(GetNameFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.guildText:SetFontObject(UPNameFont)
+    f.guildText:SetTextHeight(UPConstants.baseHeight * 0.6875)
     f.guildText:Hide()
 
     f.levelText = f.textLayerHost:CreateFontString(nil, "OVERLAY")
@@ -781,7 +856,8 @@ local function BuildNameplateUI(plate)
     f.castIcon:SetPoint("RIGHT", f.castBar, "LEFT", -2, 0)
     
     f.castName = f.castBar:CreateFontString(nil, "OVERLAY")
-    f.castName:SetFont(GetNameFont(), UPConstants.baseHeight * 0.6875, "OUTLINE")
+    f.castName:SetFontObject(UPNameFont)
+    f.castName:SetTextHeight(UPConstants.baseHeight * 0.6875)
     f.castName:SetPoint("TOP", f.castBar, "BOTTOM", 0, -2)
 	
 	f.castTime = f.castBar:CreateFontString(nil, "OVERLAY")
@@ -880,6 +956,19 @@ local function BuildNameplateUI(plate)
     f.raidIcon:SetSize(raidIconSize, raidIconSize)
     f.raidIcon:SetPoint("BOTTOM", f.auras, "TOP", 0, 4)
     f.raidIcon:Hide()
+	
+	-- TOTEM FRAME (Replaces full plate with a large totem icon)
+    local totemSize = UPConstants.baseHeight * 2
+    f.totemFrame = CreateFrame("Frame", nil, f)
+    f.totemFrame:SetFrameLevel(6)
+    f.totemFrame:SetSize(totemSize, totemSize)
+    f.totemFrame:SetPoint("CENTER", f.healthBar, "CENTER", 0, 0)
+    ApplyMaskedBorders(f.totemFrame)
+    
+    f.totemFrame.icon = f.totemFrame:CreateTexture(nil, "ARTWORK")
+    f.totemFrame.icon:SetAllPoints()
+    f.totemFrame.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    f.totemFrame:Hide()
 
     f:Hide()
     return f
@@ -1035,6 +1124,15 @@ end
 
 local function UpdatePower(f, unit)
     if not unit then return end
+	
+	-- Totems do not have power bars
+    if f.isTotem then
+        f.powerBar:Hide()
+        if f.powerBar.bgOffsetFrame then f.powerBar.bgOffsetFrame:Hide() end
+        f.powerText:SetText("")
+        return
+    end
+	
     local isTarget = SafeUnitCall(UnitIsUnit, unit, "target")
     local queryUnit = isTarget and "target" or unit
     
@@ -1178,6 +1276,48 @@ local function UpdateRaidTarget(f, unit)
     end
 end
 
+local function UpdateTotemState(f, unit)
+    if not f or not unit then return end
+    
+    if f.isTotem and f.totemIconPath then
+        -- Hide standard bars, levels, and icons
+        f.healthBar:Hide()
+        f.powerBar:Hide()
+        if f.powerBar.bgOffsetFrame then f.powerBar.bgOffsetFrame:Hide() end
+        f.typeIcon:Hide()
+        f.levelText:Hide()
+        f.healthText:Hide()
+        f.healthPercent:Hide()
+        if f.guildText then f.guildText:Hide() end
+        if f.classIcon then f.classIcon:Hide() end
+        if f.combatIcon then f.combatIcon:Hide() end
+        if f.questIcon then f.questIcon:Hide() end
+        if f.shootingIcon then f.shootingIcon:Hide() end
+
+        -- Anchor and show the Totem's Name cleanly above the icon
+        f.nameText:ClearAllPoints()
+        f.nameText:SetPoint("BOTTOM", f.totemFrame, "TOP", 0, 4)
+        f.nameText:SetTextColor(1, 1, 1, 1)
+        f.nameText:Show()
+
+        -- Show Totem Frame with reaction color border
+        f.totemFrame.icon:SetTexture(f.totemIconPath)
+        local r, g, b = UnitSelectionColor(unit)
+        if f.totemFrame.bgOffsetFrame then
+            f.totemFrame.bgOffsetFrame:SetBackdropBorderColor(r, g, b, 1)
+        end
+        f.totemFrame:Show()
+    else
+        -- Restore standard nameplate
+        if f.totemFrame then f.totemFrame:Hide() end
+        f.healthBar:Show()
+        f.typeIcon:Show()
+        f.nameText:Show()
+        f.levelText:Show()
+        f.healthText:Show()
+    end
+end
+
 local function UpdateUnitInfo(f, unit)
     if not unit then return end
 
@@ -1192,11 +1332,20 @@ local function UpdateUnitInfo(f, unit)
     if okName and name then
         if issecretvalue(name) then
             f.nameText:SetFormattedText("%s", name)
+            f.isTotem = false
         else
             f.nameText:SetText(name)
+            local tIcon = GetTotemIcon(name)
+            if tIcon then
+                f.isTotem = true
+                f.totemIconPath = tIcon
+            else
+                f.isTotem = false
+            end
         end
     else
         f.nameText:SetText("")
+        f.isTotem = false
     end
     
     -- Safe Guild Name handling
@@ -1490,6 +1639,7 @@ local function UpdateUnitInfo(f, unit)
     UpdateNameAndGuildPosition(f)
     UpdateStatusIconPositions(f)
     UpdateRaidTarget(f, unit)
+	UpdateTotemState(f, unit)
 end
 
 local function UpdateAuras(f, unit)
@@ -1673,6 +1823,36 @@ end
 local function UpdateTarget(f, unit)
     if not unit then return end
     if SafeUnitCall(UnitIsUnit, unit, "target") then
+        local arrowSize = UPConstants.baseHeight * 1.875
+        local glowScale = UnitPlatesSettings.selectionGlowScale / 100
+        f.targetLeft:ClearAllPoints()
+        f.targetRight:ClearAllPoints()
+        f.selectionGlow:ClearAllPoints()
+        
+        if f.isTotem and f.totemFrame and f.totemFrame:IsShown() then
+            -- Position arrows on totem icon
+            f.targetLeft:SetPoint("LEFT", f.totemFrame, "LEFT", -arrowSize, 0)
+            f.targetRight:SetPoint("RIGHT", f.totemFrame, "RIGHT", arrowSize, 0)
+            
+            -- Neatly size and center the selection glow around the totem icon square
+            local totemSize = UPConstants.baseHeight * 2
+            local glowTotemSize = (totemSize * 2.2) * glowScale
+            f.selectionGlow:SetPoint("CENTER", f.totemFrame, "CENTER", 0, 0)
+            f.selectionGlow:SetSize(glowTotemSize, glowTotemSize)
+        else
+            -- Normal nameplate arrows & glow
+            f.targetLeft:SetPoint("LEFT", f.typeIcon, "LEFT", -arrowSize, 0)
+            f.targetRight:SetPoint("RIGHT", f.healthBar, "RIGHT", arrowSize, 0)
+            
+            local isTriv = IsTrivial(unit)
+            local pct = isTriv and UnitPlatesSettings.nameplateWidthPercentTrivial or UnitPlatesSettings.nameplateWidthPercent
+            local width = UPConstants.baseHeight * (pct / 10)
+            local typeIconSize = UPConstants.baseHeight
+            
+            f.selectionGlow:SetPoint("CENTER", -typeIconSize / 2, 0)
+            f.selectionGlow:SetSize((width * 2.6) * glowScale, (UPConstants.baseHeight * 4.5) * glowScale)
+        end
+        
         f.targetLeft:Show()
         f.targetRight:Show()
         f.selectionGlow:Show()
