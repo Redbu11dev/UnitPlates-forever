@@ -131,7 +131,7 @@ local function InitTotemCache()
 end
 InitTotemCache()
 
-local function GetTotemIcon(name)
+local function GetTotemIcon(name, isPlayer)
     if not name or issecretvalue(name) then return nil end
     local lower = string.lower(name)
     if TotemCache[lower] then return TotemCache[lower] end
@@ -145,10 +145,11 @@ local function GetTotemIcon(name)
             return icon
         end
     end
-    
-    if string.find(lower, "totem") or string.find(lower, "тотем") then
-        return "Interface\\Icons\\Spell_Nature_GroundingTotem"
-    end
+	
+	if not isPlayer and (string.find(lower, "^totem ") or string.find(lower, " totem$")) then
+		return "Interface\\Icons\\Spell_Nature_GroundingTotem"
+	end
+	
     return nil
 end
 
@@ -1320,6 +1321,8 @@ end
 
 local function UpdateUnitInfo(f, unit)
     if not unit then return end
+	
+	local isPlayer = SafeUnitCall(UnitIsPlayer, unit)
 
      -- Safe Unit Name handling (Fetches WoW Forever's two-word "First Last" name)
     local okName, name = pcall(GetUnitName, unit)
@@ -1335,7 +1338,7 @@ local function UpdateUnitInfo(f, unit)
             f.isTotem = false
         else
             f.nameText:SetText(name)
-            local tIcon = GetTotemIcon(name)
+            local tIcon = GetTotemIcon(name, isPlayer)
             if tIcon then
                 f.isTotem = true
                 f.totemIconPath = tIcon
@@ -1353,8 +1356,6 @@ local function UpdateUnitInfo(f, unit)
     local myGuild = nil
     local okMyG, myG = pcall(GetGuildInfo, "player")
     if okMyG and myG and not issecretvalue(myG) then myGuild = myG end
-
-    local isPlayer = SafeUnitCall(UnitIsPlayer, unit)
 
     if isPlayer then
         local okG, gName = pcall(GetGuildInfo, unit)
