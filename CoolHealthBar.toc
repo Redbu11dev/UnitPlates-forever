@@ -1,9 +1,0 @@
-## Interface: 16001
-## Title: CoolHealthBar
-## Notes: Cool Health Bar by Redbu11
-## LoadOnDemand: 0
-## Author: Redbu11
-## DefaultState: enabled
-## SavedVariablesPerCharacter: CoolHealthBarSettings
-
-CoolHealthBar.lua
