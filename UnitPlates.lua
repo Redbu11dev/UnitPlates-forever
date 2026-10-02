@@ -20,10 +20,8 @@ local defaultSettings = {
     minimapIconPos = 0,
     showBuffs = true,
     onlyYourBuffs = false,
-    ignoredBuffNames = "",
     showDebuffs = true,
     onlyYourDebuffs = false,
-    ignoredDebuffNames = "",
     enableWoWTranslateSupport = true,
     enableChatBubbleHandling = true,
     overlapping = true,
@@ -54,15 +52,6 @@ local function LoadDefaultSettings()
 end
 
 InitSettings()
-
-local function IsNameIgnored(name, ignoredString)
-    if not ignoredString or ignoredString == "" then return false end
-    for word in string.gmatch(ignoredString, '([^,]+)') do
-        word = word:match("^%s*(.-)%s*$")
-        if string.lower(name) == string.lower(word) then return true end
-    end
-    return false
-end
 
 -------------------------------------------------
 -- CONSTANTS & ASSETS
@@ -433,6 +422,84 @@ local function CreateAuraIcon(parent)
     return frame
 end
 
+-- Static list of Blizzard frames to hide (allocated once in memory, not every frame)
+local explicitHideFrames = {
+    "healthBar", "HealthBar", "HealthBarsContainer",
+    "castBar", "CastBar", "CastBarsContainer",
+    "name", "NameText",
+    "LevelFrame", "levelText", "LevelText", "PlayerLevelDiffFrame",
+    "ClassificationFrame", "RaidTargetFrame", "threatIndicator",
+    "SelectionHighlight", "AggroHighlight", "SoftTargetFrame", "WidgetContainer"
+}
+
+-- Reusable aura button formatter (Zero table churn, styles once per spawn)
+local function FormatAuraButton(btn, size, scale)
+    if btn:GetAlpha() ~= 1 then btn:SetAlpha(1) end
+    if btn:GetScale() ~= scale then btn:SetScale(scale) end
+    btn:SetSize(size, size)
+    
+    -- Only rebuild textures and fonts if the button hasn't been styled yet or size changed
+    if not btn.__upFormatted or btn.__upLastSize ~= size then
+        btn.__upFormatted = true
+        btn.__upLastSize = size
+        
+        if btn.Icon then 
+            btn.Icon:SetAllPoints(btn) 
+            btn.Icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        end
+        if btn.icon then 
+            btn.icon:SetAllPoints(btn)
+            btn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        end
+        
+        if btn.Border and btn.Border:GetAlpha() ~= 0 then btn.Border:SetAlpha(0) end
+        if btn.IconBorder and btn.IconBorder:GetAlpha() ~= 0 then btn.IconBorder:SetAlpha(0) end
+        if btn.Ring and btn.Ring:GetAlpha() ~= 0 then btn.Ring:SetAlpha(0) end
+        if btn.CircleMask and btn.CircleMask:IsShown() then btn.CircleMask:Hide() end
+        
+        local cdFontSize = size * 0.45
+        local stackFontSize = size * 0.38
+        
+        -- Direct fontstrings
+        local font = GetFont()
+        local numRegions = btn:GetNumRegions()
+        for i = 1, numRegions do
+            local r = select(i, btn:GetRegions())
+            if r and r:GetObjectType() == "FontString" then
+                r:SetFont(font, cdFontSize, "OUTLINE")
+            end
+        end
+        
+        -- CountFrame (Stack Count)
+        if btn.CountFrame then
+            local numCountRegions = btn.CountFrame:GetNumRegions()
+            for i = 1, numCountRegions do
+                local r = select(i, btn.CountFrame:GetRegions())
+                if r and r:GetObjectType() == "FontString" then
+                    r:SetFont(font, stackFontSize, "OUTLINE")
+                    r:ClearAllPoints()
+                    r:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 2, -2)
+                end
+            end
+        end
+        
+        -- Cooldown Timer (Duration Text)
+        if btn.Cooldown then
+            local numCdRegions = btn.Cooldown:GetNumRegions()
+            for i = 1, numCdRegions do
+                local r = select(i, btn.Cooldown:GetRegions())
+                if r and r:GetObjectType() == "FontString" then
+                    r:SetFont(font, cdFontSize, "OUTLINE")
+                    r:ClearAllPoints()
+                    r:SetPoint("CENTER", btn, "CENTER", 0, 0)
+                end
+            end
+        end
+    end
+end
+
+local sharedSeenAuras = {}
+
 local function BuildNameplateUI(plate)
     local f = CreateFrame("Frame", nil, plate)
     f:SetAllPoints()
@@ -443,102 +510,54 @@ local function BuildNameplateUI(plate)
     local width = UPConstants.baseHeight * (UnitPlatesSettings.nameplateWidthPercent / 10)
     local typeIconSize = UPConstants.baseHeight
     
--- Hide Blizzard UI visuals and hijack modern 12.x AurasFrame
+-- Throttled update loop (Runs at ~20 FPS instead of uncapped 144+ FPS)
+    -- Highly optimized, throttled update loop (Zero table allocations per tick)
     f:SetScript("OnUpdate", function(self, elapsed)
+        local dt = elapsed or 0.25
+        self.updateThrottle = (self.updateThrottle or 0) - dt
+        if self.updateThrottle > 0 then return end
+        self.updateThrottle = 0.25 -- 20 FPS tick rate
+		
+		-- 5. Live Target Shooting / Throwing range check
+        if self.unit and SafeUnitCall(UnitIsUnit, self.unit, "target") then
+            UpdateShootingRange(self, self.unit)
+        else
+            if self.shootingIcon and self.shootingIcon:IsShown() then
+                self.shootingIcon:Hide()
+            end
+        end
+
         if plate.UnitFrame then
             local aurasFrame = plate.UnitFrame.AurasFrame or plate.UnitFrame.BuffFrame
             
-            -- 1. Recursively hide all native child frames EXCEPT the AurasFrame
-            for _, child in ipairs({plate.UnitFrame:GetChildren()}) do
-                if child ~= aurasFrame then
-                    child:SetAlpha(0)
+            -- Fast check: hide known frames
+            for i = 1, #explicitHideFrames do
+                local frame = plate.UnitFrame[explicitHideFrames[i]]
+                if frame and frame:GetAlpha() ~= 0 then
+                    frame:SetAlpha(0)
                 end
             end
 
-            -- 2. Explicitly target known 12.x / Forever frames
-            local explicitHide = {
-                "healthBar", "HealthBar", "HealthBarsContainer",
-                "castBar", "CastBar", "CastBarsContainer",
-                "name", "NameText",
-                "LevelFrame", "levelText", "LevelText", "PlayerLevelDiffFrame",
-                "ClassificationFrame", "RaidTargetFrame", "threatIndicator",
-                "SelectionHighlight", "AggroHighlight", "SoftTargetFrame", "WidgetContainer"
-            }
-            for _, key in ipairs(explicitHide) do
-                if plate.UnitFrame[key] then
-                    plate.UnitFrame[key]:SetAlpha(0)
+            -- Slow-cycle deep sweep (runs every 0.5s instead of 0.05s to eliminate CPU waste)
+            self.deepSweepTimer = (self.deepSweepTimer or 0) - dt
+            if self.deepSweepTimer <= 0 then
+                self.deepSweepTimer = 0.5
+                
+                local numChildren = plate.UnitFrame:GetNumChildren()
+                for i = 1, numChildren do
+                    local child = select(i, plate.UnitFrame:GetChildren())
+                    if child and child ~= aurasFrame and child:GetAlpha() ~= 0 then
+                        child:SetAlpha(0)
+                    end
                 end
-            end
-            
-            -- 3. Hide all direct textures / borders / fontstrings
-            for _, region in ipairs({plate.UnitFrame:GetRegions()}) do
-                local rType = region:GetObjectType()
-                if rType == "Texture" or rType == "FontString" then
-                    region:SetAlpha(0)
-                end
-            end
 
-            -- Helper to style Blizzard icon textures and shrink countdown/stack fonts
-            local function FormatAuraButton(btn, size)
-                btn:SetAlpha(1)
-                if btn:GetScale() ~= self:GetScale() then
-                    btn:SetScale(self:GetScale())
-                end
-                btn:SetSize(size, size)
-                
-                -- Crop borders off the icon texture
-                if btn.Icon then 
-                    btn.Icon:SetAllPoints(btn) 
-                    btn.Icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-                end
-                if btn.icon then 
-                    btn.icon:SetAllPoints(btn)
-                    btn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-                end
-                
-                -- Hide default Blizzard borders, rings, and round masks
-                if btn.Border then btn.Border:SetAlpha(0) end
-                if btn.IconBorder then btn.IconBorder:SetAlpha(0) end
-                if btn.Ring then btn.Ring:SetAlpha(0) end
-                if btn.CircleMask then btn.CircleMask:Hide() end
-                
-                local cdFontSize = size * 0.45
-                local stackFontSize = size * 0.38
-                
-                -- Direct fontstrings
-                for _, r in ipairs({btn:GetRegions()}) do
-                    if r:GetObjectType() == "FontString" then
-                        r:SetFont(GetFont(), cdFontSize, "OUTLINE")
-                    end
-                end
-                
-                -- CountFrame (Stack Count)
-                if btn.CountFrame then
-                    for _, r in ipairs({btn.CountFrame:GetRegions()}) do
-                        if r:GetObjectType() == "FontString" then
-                            r:SetFont(GetFont(), stackFontSize, "OUTLINE")
-                            r:ClearAllPoints()
-                            r:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 2, -2)
-                        end
-                    end
-                end
-                
-                -- Cooldown Timer (Duration Text)
-                if btn.Cooldown then
-                    for _, r in ipairs({btn.Cooldown:GetRegions()}) do
-                        if r:GetObjectType() == "FontString" then
-                            r:SetFont(GetFont(), cdFontSize, "OUTLINE")
-                            r:ClearAllPoints()
-                            r:SetPoint("CENTER", btn, "CENTER", 0, 0)
-                        end
-                    end
-                    for _, c in ipairs({btn.Cooldown:GetChildren()}) do
-                        for _, r in ipairs({c:GetRegions()}) do
-                            if r:GetObjectType() == "FontString" then
-                                r:SetFont(GetFont(), cdFontSize, "OUTLINE")
-                                r:ClearAllPoints()
-                                r:SetPoint("CENTER", btn, "CENTER", 0, 0)
-                            end
+                local numRegions = plate.UnitFrame:GetNumRegions()
+                for i = 1, numRegions do
+                    local region = select(i, plate.UnitFrame:GetRegions())
+                    if region and region:GetAlpha() ~= 0 then
+                        local rType = region:GetObjectType()
+                        if rType == "Texture" or rType == "FontString" then
+                            region:SetAlpha(0)
                         end
                     end
                 end
@@ -548,91 +567,93 @@ local function BuildNameplateUI(plate)
             local inCombat = InCombatLockdown() or UnitAffectingCombat("player")
             if aurasFrame then
                 if inCombat then
-                    aurasFrame:SetAlpha(1)
+                    if aurasFrame:GetAlpha() ~= 1 then aurasFrame:SetAlpha(1) end
                     
                     local unit = self.unit
                     local maxPerRow = (unit and IsTrivial(unit)) and UnitPlatesSettings.aurasInRowTrivial or UnitPlatesSettings.aurasInRow
                     local topIconSize = (self.healthBar:GetWidth() / maxPerRow) - 2
-                    local ccIconSize = UPConstants.baseHeight * 1.3 -- Proportional size for CC icons
+                    local ccIconSize = UPConstants.baseHeight * 1.3
                     local arrowSize = UPConstants.baseHeight * 1.875
+                    local currentScale = self:GetScale()
 
-                    local seen = {}
+                    table.wipe(sharedSeenAuras)
 
                     -- === TOP ROW: Standard Buffs & Debuffs ===
                     local topIndex = 0
-                    local topContainers = {
-                        aurasFrame.BuffListFrame,
-                        aurasFrame.DebuffListFrame,
-                    }
-                    for _, container in ipairs(topContainers) do
-                        if container then
-                            container:SetAlpha(1)
-                            for _, child in ipairs({container:GetChildren()}) do
-                                if not seen[child] and child:IsShown() and (child.Icon or child.icon or child.Texture) then
-                                    seen[child] = true
-                                    
-                                    child:ClearAllPoints()
-                                    local col = topIndex % maxPerRow
-                                    local row = math.floor(topIndex / maxPerRow)
-                                    local xOffset = col * (topIconSize + 2)
-                                    local yOffset = row * (topIconSize + 2)
-                                    
-                                    -- Sits at the exact Y anchor of your API auras container
-                                    child:SetPoint("BOTTOMLEFT", self.auras, "BOTTOMLEFT", xOffset, yOffset)
-                                    
-                                    FormatAuraButton(child, topIconSize)
-                                    topIndex = topIndex + 1
-                                end
+                    local buffList = aurasFrame.BuffListFrame
+                    local debuffList = aurasFrame.DebuffListFrame
+                    
+                    if buffList and buffList:IsShown() then
+                        local num = buffList:GetNumChildren()
+                        for i = 1, num do
+                            local child = select(i, buffList:GetChildren())
+                            if child and not sharedSeenAuras[child] and child:IsShown() and (child.Icon or child.icon or child.Texture) then
+                                sharedSeenAuras[child] = true
+                                child:ClearAllPoints()
+                                local col = topIndex % maxPerRow
+                                local row = math.floor(topIndex / maxPerRow)
+                                child:SetPoint("BOTTOMLEFT", self.auras, "BOTTOMLEFT", col * (topIconSize + 2), row * (topIconSize + 2))
+                                FormatAuraButton(child, topIconSize, currentScale)
+                                topIndex = topIndex + 1
+                            end
+                        end
+                    end
+                    
+                    if debuffList and debuffList:IsShown() then
+                        local num = debuffList:GetNumChildren()
+                        for i = 1, num do
+                            local child = select(i, debuffList:GetChildren())
+                            if child and not sharedSeenAuras[child] and child:IsShown() and (child.Icon or child.icon or child.Texture) then
+                                sharedSeenAuras[child] = true
+                                child:ClearAllPoints()
+                                local col = topIndex % maxPerRow
+                                local row = math.floor(topIndex / maxPerRow)
+                                child:SetPoint("BOTTOMLEFT", self.auras, "BOTTOMLEFT", col * (topIconSize + 2), row * (topIconSize + 2))
+                                FormatAuraButton(child, topIconSize, currentScale)
+                                topIndex = topIndex + 1
                             end
                         end
                     end
 
                     -- === RIGHT SIDE: Crowd Control / Priority Auras ===
                     local rightIndex = 0
-                    local rightContainers = {
-                        aurasFrame.CrowdControlListFrame,
-                        aurasFrame.LossOfControlFrame,
-                    }
-                    -- Prevent overlapping the target arrow when targeted
+                    local ccList = aurasFrame.CrowdControlListFrame
+                    local locList = aurasFrame.LossOfControlFrame
                     local rightStartOffset = (self.targetRight and self.targetRight:IsShown()) and (arrowSize + 4) or 6
-                    
-                    for _, container in ipairs(rightContainers) do
-                        if container then
-                            container:SetAlpha(1)
-                            for _, child in ipairs({container:GetChildren()}) do
-                                if not seen[child] and child:IsShown() and (child.Icon or child.icon or child.Texture) then
-                                    seen[child] = true
-                                    
-                                    child:ClearAllPoints()
-                                    local xOffset = rightStartOffset + (rightIndex * (ccIconSize + 3))
-                                    -- Vertically centered to the right of the healthbar
-                                    child:SetPoint("LEFT", self.healthBar, "RIGHT", xOffset, 0)
-                                    
-                                    FormatAuraButton(child, ccIconSize)
-                                    rightIndex = rightIndex + 1
-                                end
+
+                    if ccList and ccList:IsShown() then
+                        local num = ccList:GetNumChildren()
+                        for i = 1, num do
+                            local child = select(i, ccList:GetChildren())
+                            if child and not sharedSeenAuras[child] and child:IsShown() and (child.Icon or child.icon or child.Texture) then
+                                sharedSeenAuras[child] = true
+                                child:ClearAllPoints()
+                                child:SetPoint("LEFT", self.healthBar, "RIGHT", rightStartOffset + (rightIndex * (ccIconSize + 3)), 0)
+                                FormatAuraButton(child, ccIconSize, currentScale)
+                                rightIndex = rightIndex + 1
+                            end
+                        end
+                    end
+
+                    if locList and locList:IsShown() then
+                        local num = locList:GetNumChildren()
+                        for i = 1, num do
+                            local child = select(i, locList:GetChildren())
+                            if child and not sharedSeenAuras[child] and child:IsShown() and (child.Icon or child.icon or child.Texture) then
+                                sharedSeenAuras[child] = true
+                                child:ClearAllPoints()
+                                child:SetPoint("LEFT", self.healthBar, "RIGHT", rightStartOffset + (rightIndex * (ccIconSize + 3)), 0)
+                                FormatAuraButton(child, ccIconSize, currentScale)
+                                rightIndex = rightIndex + 1
                             end
                         end
                     end
                 else
-                    aurasFrame:SetAlpha(0)
+                    if aurasFrame:GetAlpha() ~= 0 then aurasFrame:SetAlpha(0) end
                 end
             end
         end
-		
-		-- Live Target Shooting / Throwing range check
-		self.rangeCheckTimer = (self.rangeCheckTimer or 0) - (elapsed or 0.05)
-		if self.rangeCheckTimer <= 0 then
-			self.rangeCheckTimer = 0.1
-			if self.unit and SafeUnitCall(UnitIsUnit, self.unit, "target") then
-				UpdateShootingRange(self, self.unit)
-			else
-				if self.shootingIcon and self.shootingIcon:IsShown() then
-					self.shootingIcon:Hide()
-				end
-			end
-		end
-		
+
         self:SetAlpha(1)
     end)
 	
@@ -853,13 +874,15 @@ local function ApplyDynamicWidth(f, unit)
     local pct = isTriv and UnitPlatesSettings.nameplateWidthPercentTrivial or UnitPlatesSettings.nameplateWidthPercent
     local width = UPConstants.baseHeight * (pct / 10)
     
-    f.healthBar:SetWidth(width)
-    f.powerBar:SetWidth(width)
-    f.castBar:SetWidth(width)
-    f.auras:SetWidth(width)
-    
-    local glowScale = UnitPlatesSettings.selectionGlowScale / 100
-    f.selectionGlow:SetWidth((width * 2.6) * glowScale)
+    if f.healthBar:GetWidth() ~= width then
+        f.healthBar:SetWidth(width)
+        f.powerBar:SetWidth(width)
+        f.castBar:SetWidth(width)
+        f.auras:SetWidth(width)
+        
+        local glowScale = UnitPlatesSettings.selectionGlowScale / 100
+        f.selectionGlow:SetWidth((width * 2.6) * glowScale)
+    end
 end
 
 local function UpdateHealth(f, unit)
@@ -1446,57 +1469,48 @@ local function UpdateAuras(f, unit)
     local debuffCount = 0
 
     for _, auraData in ipairs(buffs) do
-        local name = auraData.name
         
-        -- SAFEGUARD: If name is a secret value, bypass the ignore list but STILL SHOW IT
-        local isIgnored = false
-        if name and not issecretvalue(name) then
-            isIgnored = IsNameIgnored(name, UnitPlatesSettings.ignoredBuffNames)
-        end
-        
-        if not isIgnored then
-            if not (UnitPlatesSettings.onlyYourBuffs and auraData.sourceUnit ~= "player") then
-                if iconIndex <= #f.auraIcons then
-                    local icon = f.auraIcons[iconIndex]
-                    icon:SetSize(iconSize, iconSize)
-                    
-                    local col = buffCount % maxPerRow
-                    local row = math.floor(buffCount / maxPerRow)
-                    local yOffset = row * (iconSize + 2)
-                    
-                    icon:SetPoint("BOTTOMLEFT", col * (iconSize + 2), yOffset)
-                    icon.cdText:SetFont(GetFont(), iconSize * 0.4, "OUTLINE")
-                    icon.count:SetFont(GetFont(), iconSize * 0.35, "OUTLINE")
-                    
-                    local texture = auraData.icon
-                    if issecretvalue(texture) then texture = "Interface\\Icons\\INV_Misc_QuestionMark" end
-                    icon.icon:SetTexture(texture)
-                    
-                    local count = auraData.applications or 0
-                    if issecretvalue(count) then count = 0 end
-                    icon.count:SetText(count > 1 and count or "")
-                    
-                    local duration = auraData.duration or 0
-                    local expirationTime = auraData.expirationTime or 0
-                    
-                    icon.duration = duration
-                    icon.expirationTime = expirationTime
-                    
-                    -- SetCooldown natively accepts secret values!
-                    if duration > 0 or issecretvalue(duration) then
-                        icon.cooldown:SetCooldown(expirationTime - duration, duration)
-                        icon.cooldown:Show()
-                    else
-                        icon.cooldown:Hide()
-                        icon.cdText:SetText("")
-                    end
-                    
-                    icon:Show()
-                    iconIndex = iconIndex + 1
-                    buffCount = buffCount + 1
-                end
-            end
-        end
+        if not (UnitPlatesSettings.onlyYourBuffs and auraData.sourceUnit ~= "player") then
+			if iconIndex <= #f.auraIcons then
+				local icon = f.auraIcons[iconIndex]
+				icon:SetSize(iconSize, iconSize)
+				
+				local col = buffCount % maxPerRow
+				local row = math.floor(buffCount / maxPerRow)
+				local yOffset = row * (iconSize + 2)
+				
+				icon:SetPoint("BOTTOMLEFT", col * (iconSize + 2), yOffset)
+				icon.cdText:SetFont(GetFont(), iconSize * 0.4, "OUTLINE")
+				icon.count:SetFont(GetFont(), iconSize * 0.35, "OUTLINE")
+				
+				local texture = auraData.icon
+				if issecretvalue(texture) then texture = "Interface\\Icons\\INV_Misc_QuestionMark" end
+				icon.icon:SetTexture(texture)
+				
+				local count = auraData.applications or 0
+				if issecretvalue(count) then count = 0 end
+				icon.count:SetText(count > 1 and count or "")
+				
+				local duration = auraData.duration or 0
+				local expirationTime = auraData.expirationTime or 0
+				
+				icon.duration = duration
+				icon.expirationTime = expirationTime
+				
+				-- SetCooldown natively accepts secret values!
+				if duration > 0 or issecretvalue(duration) then
+					icon.cooldown:SetCooldown(expirationTime - duration, duration)
+					icon.cooldown:Show()
+				else
+					icon.cooldown:Hide()
+					icon.cdText:SetText("")
+				end
+				
+				icon:Show()
+				iconIndex = iconIndex + 1
+				buffCount = buffCount + 1
+			end
+		end
     end
 
     local buffRows = math.ceil(buffCount / maxPerRow)
@@ -1504,57 +1518,48 @@ local function UpdateAuras(f, unit)
     if buffCount > 0 then debuffStartY = debuffStartY + (iconSize * 0.3) end -- Spacer gap
 
     for _, auraData in ipairs(debuffs) do
-        local name = auraData.name
         
-        -- SAFEGUARD: If name is a secret value, bypass the ignore list but STILL SHOW IT
-        local isIgnored = false
-        if name and not issecretvalue(name) then
-            isIgnored = IsNameIgnored(name, UnitPlatesSettings.ignoredDebuffNames)
-        end
-        
-        if not isIgnored then
-            if not (UnitPlatesSettings.onlyYourDebuffs and not auraData.isBossAura and auraData.sourceUnit ~= "player") then
-                if iconIndex <= #f.auraIcons then
-                    local icon = f.auraIcons[iconIndex]
-                    icon:SetSize(iconSize, iconSize)
-                    
-                    local col = debuffCount % maxPerRow
-                    local row = math.floor(debuffCount / maxPerRow)
-                    local yOffset = debuffStartY + (row * (iconSize + 2))
-                    
-                    icon:SetPoint("BOTTOMLEFT", col * (iconSize + 2), yOffset)
-                    icon.cdText:SetFont(GetFont(), iconSize * 0.4, "OUTLINE")
-                    icon.count:SetFont(GetFont(), iconSize * 0.35, "OUTLINE")
-                    
-                    local texture = auraData.icon
-                    if issecretvalue(texture) then texture = "Interface\\Icons\\INV_Misc_QuestionMark" end
-                    icon.icon:SetTexture(texture)
-                    
-                    local count = auraData.applications or 0
-                    if issecretvalue(count) then count = 0 end
-                    icon.count:SetText(count > 1 and count or "")
-                    
-                    local duration = auraData.duration or 0
-                    local expirationTime = auraData.expirationTime or 0
-                    
-                    icon.duration = duration
-                    icon.expirationTime = expirationTime
-                    
-                    -- SetCooldown natively accepts secret values!
-                    if duration > 0 or issecretvalue(duration) then
-                        icon.cooldown:SetCooldown(expirationTime - duration, duration)
-                        icon.cooldown:Show()
-                    else
-                        icon.cooldown:Hide()
-                        icon.cdText:SetText("")
-                    end
-                    
-                    icon:Show()
-                    iconIndex = iconIndex + 1
-                    debuffCount = debuffCount + 1
-                end
-            end
-        end
+        if not (UnitPlatesSettings.onlyYourDebuffs and not auraData.isBossAura and auraData.sourceUnit ~= "player") then
+			if iconIndex <= #f.auraIcons then
+				local icon = f.auraIcons[iconIndex]
+				icon:SetSize(iconSize, iconSize)
+				
+				local col = debuffCount % maxPerRow
+				local row = math.floor(debuffCount / maxPerRow)
+				local yOffset = debuffStartY + (row * (iconSize + 2))
+				
+				icon:SetPoint("BOTTOMLEFT", col * (iconSize + 2), yOffset)
+				icon.cdText:SetFont(GetFont(), iconSize * 0.4, "OUTLINE")
+				icon.count:SetFont(GetFont(), iconSize * 0.35, "OUTLINE")
+				
+				local texture = auraData.icon
+				if issecretvalue(texture) then texture = "Interface\\Icons\\INV_Misc_QuestionMark" end
+				icon.icon:SetTexture(texture)
+				
+				local count = auraData.applications or 0
+				if issecretvalue(count) then count = 0 end
+				icon.count:SetText(count > 1 and count or "")
+				
+				local duration = auraData.duration or 0
+				local expirationTime = auraData.expirationTime or 0
+				
+				icon.duration = duration
+				icon.expirationTime = expirationTime
+				
+				-- SetCooldown natively accepts secret values!
+				if duration > 0 or issecretvalue(duration) then
+					icon.cooldown:SetCooldown(expirationTime - duration, duration)
+					icon.cooldown:Show()
+				else
+					icon.cooldown:Hide()
+					icon.cdText:SetText("")
+				end
+				
+				icon:Show()
+				iconIndex = iconIndex + 1
+				debuffCount = debuffCount + 1
+			end
+		end
     end
 end
 
@@ -1802,22 +1807,8 @@ local function BuildOptionsUI()
     chkMineBuffs:SetChecked(UnitPlatesSettings.onlyYourBuffs)
     chkMineBuffs:SetScript("OnClick", function(self) UnitPlatesSettings.onlyYourBuffs = self:GetChecked() end)
 
-    local buffIgnoreTitle = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    buffIgnoreTitle:SetPoint("TOPLEFT", chkMineBuffs, "BOTTOMLEFT", 0, -5)
-    buffIgnoreTitle:SetText("Ignore buff names:")
-    local buffIgnoreInput = CreateFrame("EditBox", nil, container, "BackdropTemplate")
-    buffIgnoreInput:SetPoint("TOPLEFT", buffIgnoreTitle, "BOTTOMLEFT", 0, -5)
-    buffIgnoreInput:SetSize(280, 26)
-    buffIgnoreInput:SetFontObject("GameFontNormal")
-    buffIgnoreInput:SetAutoFocus(false)
-    buffIgnoreInput:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background", edgeFile="Interface/DialogFrame/UI-DialogBox-Border", edgeSize=12, insets={left=2, right=2, top=2, bottom=2}})
-    buffIgnoreInput:SetBackdropColor(0,0,0,0.8)
-    buffIgnoreInput:SetTextInsets(5, 5, 5, 5)
-    buffIgnoreInput:SetText(UnitPlatesSettings.ignoredBuffNames)
-    buffIgnoreInput:SetScript("OnTextChanged", function(self) UnitPlatesSettings.ignoredBuffNames = self:GetText() end)
-
     local chkDebuffs = CreateFrame("CheckButton", nil, container, "UICheckButtonTemplate")
-    chkDebuffs:SetPoint("TOPLEFT", buffIgnoreInput, "BOTTOMLEFT", 0, -15)
+    chkDebuffs:SetPoint("TOPLEFT", chkMineBuffs, "BOTTOMLEFT", 0, -15)
     chkDebuffs.Text:SetText("Show Debuffs")
     chkDebuffs:SetChecked(UnitPlatesSettings.showDebuffs)
     chkDebuffs:SetScript("OnClick", function(self) UnitPlatesSettings.showDebuffs = self:GetChecked() end)
@@ -1828,23 +1819,9 @@ local function BuildOptionsUI()
     chkMineDebuffs:SetChecked(UnitPlatesSettings.onlyYourDebuffs)
     chkMineDebuffs:SetScript("OnClick", function(self) UnitPlatesSettings.onlyYourDebuffs = self:GetChecked() end)
 
-    local debuffIgnoreTitle = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    debuffIgnoreTitle:SetPoint("TOPLEFT", chkMineDebuffs, "BOTTOMLEFT", 0, -5)
-    debuffIgnoreTitle:SetText("Ignore debuff names:")
-    local debuffIgnoreInput = CreateFrame("EditBox", nil, container, "BackdropTemplate")
-    debuffIgnoreInput:SetPoint("TOPLEFT", debuffIgnoreTitle, "BOTTOMLEFT", 0, -5)
-    debuffIgnoreInput:SetSize(280, 26)
-    debuffIgnoreInput:SetFontObject("GameFontNormal")
-    debuffIgnoreInput:SetAutoFocus(false)
-    debuffIgnoreInput:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background", edgeFile="Interface/DialogFrame/UI-DialogBox-Border", edgeSize=12, insets={left=2, right=2, top=2, bottom=2}})
-    debuffIgnoreInput:SetBackdropColor(0,0,0,0.8)
-    debuffIgnoreInput:SetTextInsets(5, 5, 5, 5)
-    debuffIgnoreInput:SetText(UnitPlatesSettings.ignoredDebuffNames)
-    debuffIgnoreInput:SetScript("OnTextChanged", function(self) UnitPlatesSettings.ignoredDebuffNames = self:GetText() end)
-
     -- === UI SECTION ===
     local uiTitle = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    uiTitle:SetPoint("TOPLEFT", debuffIgnoreInput, "BOTTOMLEFT", 0, -25)
+    uiTitle:SetPoint("TOPLEFT", chkMineDebuffs, "BOTTOMLEFT", 0, -25)
     uiTitle:SetTextColor(0.999, 0.819, 0)
     uiTitle:SetText("--- UI:")
 
