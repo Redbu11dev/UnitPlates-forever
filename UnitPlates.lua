@@ -1231,11 +1231,15 @@ local function UpdateUnitInfo(f, unit)
         end
         
         local okClass, class = pcall(UnitClass, unit)
-        if okClass and not issecretvalue(class) and class and classCoords[class] then
-            f.classIcon:SetTexCoord(unpack(classCoords[class]))
+		--print("okClass: "..okClass)
+		---print("class: "..class)
+        if okClass and not issecretvalue(class) and class and classCoords[string.upper(class)] then
+            f.classIcon:SetTexCoord(unpack(classCoords[string.upper(class)]))
             f.classIcon:Show()
+			--print("class: "..class)
         else
             f.classIcon:Hide()
+			--print("xclass: "..class)
         end
         
         local rank = 0
