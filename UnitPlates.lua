@@ -1910,7 +1910,42 @@ local function BuildOptionsUI()
         UnitPlatesSettings.nameplateWidthPercentTrivial = val
         _G[self:GetName().."Text"]:SetText("Nameplate width % (Trivials): " .. val)
     end)
+	
+-- Sync all widgets to live SavedVariables every time the options window opens
+    local function RefreshOptionsUI()
+        sldAuraRow:SetValue(UnitPlatesSettings.aurasInRow)
+        _G[sldAuraRow:GetName().."Text"]:SetText("Auras in row: " .. UnitPlatesSettings.aurasInRow)
+        
+        sldAuraRowT:SetValue(UnitPlatesSettings.aurasInRowTrivial)
+        _G[sldAuraRowT:GetName().."Text"]:SetText("Auras in row (Trivials): " .. UnitPlatesSettings.aurasInRowTrivial)
+        
+        chkBuffs:SetChecked(UnitPlatesSettings.showBuffs)
+        chkMineBuffs:SetChecked(UnitPlatesSettings.onlyYourBuffs)
+        chkDebuffs:SetChecked(UnitPlatesSettings.showDebuffs)
+        chkMineDebuffs:SetChecked(UnitPlatesSettings.onlyYourDebuffs)
+        chkOverlap:SetChecked(UnitPlatesSettings.overlapping)
+        
+        sldScale:SetValue(UnitPlatesSettings.scale)
+        _G[sldScale:GetName().."Text"]:SetText("Scale: " .. UnitPlatesSettings.scale)
+        
+        sldGlowScale:SetValue(UnitPlatesSettings.selectionGlowScale)
+        _G[sldGlowScale:GetName().."Text"]:SetText("Selection glow scale %: " .. UnitPlatesSettings.selectionGlowScale)
+        
+        sldGlowAlpha:SetValue(UnitPlatesSettings.selectionGlowAlpha)
+        _G[sldGlowAlpha:GetName().."Text"]:SetText("Selection glow alpha %: " .. UnitPlatesSettings.selectionGlowAlpha)
+        
+        sldWidth:SetValue(UnitPlatesSettings.nameplateWidthPercent)
+        _G[sldWidth:GetName().."Text"]:SetText("Nameplate width %: " .. UnitPlatesSettings.nameplateWidthPercent)
+        
+        sldWidthT:SetValue(UnitPlatesSettings.nameplateWidthPercentTrivial)
+        _G[sldWidthT:GetName().."Text"]:SetText("Nameplate width % (Trivials): " .. UnitPlatesSettings.nameplateWidthPercentTrivial)
+    end
+
+    OptionsFrame:SetScript("OnShow", RefreshOptionsUI)
 end
+
+
+
 BuildOptionsUI()
 
 -------------------------------------------------
